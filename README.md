@@ -1,6 +1,6 @@
 # NovaGrid Agents
 
-A Nova-native enterprise agent workspace built on Amazon Nova for reasoning, retrieval, browser automation, and optional voice interaction.
+A Nova-native enterprise agent workspace built on Amazon Nova 
 
 ## Features
 
@@ -55,13 +55,6 @@ MEILI_URL=http://localhost:7700
 
 ### Start Meilisearch (required for Lexical RAG)
 
-PowerShell:
-
-```powershell
-docker compose up -d
-```
-
-bash:
 
 ```bash
 docker compose up -d
@@ -73,13 +66,7 @@ Meilisearch should be available at `http://localhost:7700`.
 
 ### Terminal 1 — LangGraph runtime (port 2024)
 
-PowerShell:
 
-```powershell
-uv run langgraph dev
-```
-
-bash:
 
 ```bash
 uv run langgraph dev
@@ -87,13 +74,7 @@ uv run langgraph dev
 
 ### Terminal 2 — Builder API (port 8100)
 
-PowerShell:
 
-```powershell
-uv run uvicorn api.app:app --host 0.0.0.0 --port 8100
-```
-
-bash:
 
 ```bash
 uv run uvicorn api.app:app --host 0.0.0.0 --port 8100
@@ -101,20 +82,11 @@ uv run uvicorn api.app:app --host 0.0.0.0 --port 8100
 
 ### Terminal 3 — Frontend (port 3000)
 
-PowerShell:
-
-```powershell
-cd frontend
-pnpm install
-pnpm dev
-```
-
-bash:
 
 ```bash
 cd frontend
-pnpm install
-pnpm dev
+npm run build
+npm run dev
 ```
 
 Open the UI at `http://localhost:3000`.
