@@ -25,6 +25,7 @@ data/*.db-*
 *.db-wal
 *.db-shm
 data/local_rag/
+data/
 
 # Node / Next.js
 node_modules/
