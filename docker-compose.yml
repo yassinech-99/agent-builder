@@ -1,0 +1,21 @@
+services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    container_name: novagrid-meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_NO_ANALYTICS: "true"
+      # Optional: set MEILI_MASTER_KEY in your shell / env before running
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY:-}"
+    volumes:
+      - meili_data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  meili_data:
+

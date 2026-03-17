@@ -1,0 +1,51 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# LangGraph / runtime artifacts
+.langgraph_api/
+*.pckl
+
+# Local databases
+data/*.db
+data/*.db-*
+*.db-wal
+*.db-shm
+data/local_rag/
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/.env
+frontend/.env.*
+
+# Local vendor / experimental repos
+scoutsuite-aws-mcp/
+
+# Logs / OS
+*.log
+.DS_Store
+
+# Hackathon notes / local markdown (keep README.md tracked)
+*.md
+!README.md
+
+# Local scripts / scratch
+test_*.py
+workspace/

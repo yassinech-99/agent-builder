@@ -1,0 +1,13 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./agent/graph.py:make_graph"
+  },
+  "env": ".env",
+  "http": {
+    "configurable_headers": {
+      "includes": ["x-agent-config"]
+    }
+  }
+}
