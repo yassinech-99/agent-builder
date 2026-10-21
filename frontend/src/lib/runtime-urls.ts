@@ -1,10 +1,10 @@
 /**
- * Centralized endpoint & storage namespace helpers for nimAgents.
+ * Centralized endpoint, multi-tenant header & storage namespace helpers for nimAgents.
  *
  * Ensures browser requests default to same-origin Next.js proxy paths (`/api/builder`
  * and `${origin}/api`) so remote preview environments, reverse proxies, and Docker
  * deployments never attempt browser calls to `localhost:8100` / `localhost:2024`,
- * while immediately honoring user overrides saved in `/settings`.
+ * while immediately honoring user overrides & active tenant/workspace scope in `/settings`.
  */
 
 export const NIMAGENTS_STORAGE = {
@@ -13,6 +13,9 @@ export const NIMAGENTS_STORAGE = {
   newsletter: "nimagents:newsletter-email",
   runtimeApiUrl: "nimagents:settings:runtimeApiUrl",
   builderApiUrl: "nimagents:settings:builderApiUrl",
+  tenantId: "nimagents:settings:tenantId",
+  workspaceId: "nimagents:settings:workspaceId",
+  planTier: "nimagents:settings:planTier",
   knowledgePrefix: "nimagents:knowledge",
 } as const;
 
@@ -32,6 +35,34 @@ export function getSavedBuilderOverride(): string {
   } catch {
     return "";
   }
+}
+
+export function getActiveTenantScope(): {
+  tenantId: string;
+  workspaceId: string;
+  planTier: string;
+} {
+  if (typeof window === "undefined") {
+    return { tenantId: "default", workspaceId: "default", planTier: "pro" };
+  }
+  try {
+    return {
+      tenantId: (window.localStorage.getItem(NIMAGENTS_STORAGE.tenantId) || "default").trim() || "default",
+      workspaceId: (window.localStorage.getItem(NIMAGENTS_STORAGE.workspaceId) || "default").trim() || "default",
+      planTier: (window.localStorage.getItem(NIMAGENTS_STORAGE.planTier) || "pro").trim() || "pro",
+    };
+  } catch {
+    return { tenantId: "default", workspaceId: "default", planTier: "pro" };
+  }
+}
+
+export function getTenantHeaders(): Record<string, string> {
+  const { tenantId, workspaceId, planTier } = getActiveTenantScope();
+  return {
+    "X-Tenant-ID": tenantId,
+    "X-Workspace-ID": workspaceId,
+    "X-Plan-Tier": planTier,
+  };
 }
 
 /**
@@ -73,7 +104,6 @@ export function getVoiceWsUrl(modelId?: string): string {
   }
   if (typeof window !== "undefined") {
     const { protocol, hostname } = window.location;
-    // Automatically map sandbox preview hosts (`3000-<id>.e2b.app` -> `8100-<id>.e2b.app`)
     const e2bMatch = hostname.match(/^\d+-(.+\.e2b\.(?:app|dev))$/i);
     if (e2bMatch) {
       const wsProto = protocol === "https:" ? "wss:" : "ws:";

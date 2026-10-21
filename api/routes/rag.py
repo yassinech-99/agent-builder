@@ -1,4 +1,4 @@
-"""External / NVIDIA NIM RAG knowledge collection management endpoints."""
+"""Multi-tenant External / NVIDIA NIM RAG knowledge collection management endpoints."""
 
 from __future__ import annotations
 
@@ -7,15 +7,23 @@ import io
 import json
 import logging
 import os
-import uuid
+from pathlib import Path
+import tempfile
 from typing import Any
+import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from agent.model import get_model
+from api.core.tenancy import (
+    get_tenant_context,
+    scoped_object_prefix,
+    stream_upload_to_path,
+)
 from api.db import get_db, mask_secret
 from api.routes.storage import build_minio_client_for_bucket
+from api.utils.doc_loader import MAX_FILE_SIZE
 
 logger = logging.getLogger("nimagents.api.rag")
 router = APIRouter(prefix="/api/rag", tags=["rag"])
@@ -89,25 +97,32 @@ def query_nim_rag_row(row: dict[str, Any], query: str, k: int = 5) -> list[dict[
 
 @router.get("")
 def list_sources():
+    ctx = get_tenant_context()
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM rag_sources ORDER BY created_at DESC"
+            """SELECT * FROM rag_sources
+               WHERE tenant_id = ? AND workspace_id = ?
+               ORDER BY created_at DESC""",
+            (ctx.tenant_id, ctx.workspace_id),
         ).fetchall()
     return [_serialize_rag_source(r) for r in rows]
 
 
 @router.post("/register", status_code=201)
 def register_knowledge_base(body: RegisterRequest):
-    """Register an NVIDIA NIM RAG endpoint & collection."""
+    """Register a tenant-scoped NVIDIA NIM RAG endpoint & collection."""
+    ctx = get_tenant_context()
     source_id = str(uuid.uuid4())
     with get_db() as conn:
         conn.execute(
             """INSERT INTO rag_sources
-               (id, name, description, endpoint_url, collection_name, api_key,
+               (id, tenant_id, workspace_id, name, description, endpoint_url, collection_name, api_key,
                 ranking_model, storage_bucket, storage_prefix, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')""",
             (
                 source_id,
+                ctx.tenant_id,
+                ctx.workspace_id,
                 body.name.strip(),
                 body.description.strip(),
                 body.endpoint_url.strip(),
@@ -120,29 +135,33 @@ def register_knowledge_base(body: RegisterRequest):
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM rag_sources WHERE id=?", (source_id,)
+            "SELECT * FROM rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
     return _serialize_rag_source(row)
 
 
 @router.delete("/{source_id}")
 def delete_source(source_id: str):
+    ctx = get_tenant_context()
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT id FROM rag_sources WHERE id=?", (source_id,)
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Source not found")
-        conn.execute("DELETE FROM rag_sources WHERE id=?", (source_id,))
+        cur = conn.execute(
+            "DELETE FROM rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
+        )
         conn.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Source not found")
     return {"ok": True}
 
 
 @router.post("/{source_id}/query")
 async def query_source(source_id: str, body: QueryRequest):
+    ctx = get_tenant_context()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM rag_sources WHERE id=?", (source_id,)
+            "SELECT * FROM rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -167,10 +186,12 @@ async def upload_data_to_kb(
     metadata_json: str = Form(default=""),
     description: str = Form(default=""),
 ):
-    """Upload a document (+ optional metadata sidecar) to the configured S3-compatible bucket."""
+    """Stream-upload a document under strict `tenants/{tid}/workspaces/{wid}/...` prefix."""
+    ctx = get_tenant_context()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM rag_sources WHERE id=?", (source_id,)
+            "SELECT * FROM rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -183,44 +204,46 @@ async def upload_data_to_kb(
             detail="No object storage bucket configured for this knowledge collection.",
         )
 
-    filename = file.filename or "upload.bin"
-    content = await file.read()
+    filename = Path(file.filename or "upload.bin").name
+    tenant_prefix = scoped_object_prefix(prefix, ctx)
+    object_key = f"{tenant_prefix}{filename}"
+    minio_client = build_minio_client_for_bucket(bucket, ctx=ctx)
 
-    meta = metadata_json.strip()
-    if not meta and description.strip():
-        meta = await _generate_metadata_json(description, filename)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staged_path = Path(tmpdir) / filename
+        await stream_upload_to_path(file, staged_path, max_bytes=MAX_FILE_SIZE)
 
-    object_key = f"{prefix}/{filename}".lstrip("/") if prefix else filename
-    minio_client = build_minio_client_for_bucket(bucket)
+        meta = metadata_json.strip()
+        if not meta and description.strip():
+            meta = await _generate_metadata_json(description, filename)
 
-    def _upload_objects() -> bool:
-        minio_client.put_object(
-            bucket_name=bucket,
-            object_name=object_key,
-            data=io.BytesIO(content),
-            length=len(content),
-        )
-        uploaded_meta = False
-        if meta:
-            try:
-                parsed = json.loads(meta)
-                payload = json.dumps(parsed, indent=2).encode("utf-8")
-                minio_client.put_object(
-                    bucket_name=bucket,
-                    object_name=f"{object_key}.metadata.json",
-                    data=io.BytesIO(payload),
-                    length=len(payload),
-                    content_type="application/json",
-                )
-                uploaded_meta = True
-            except json.JSONDecodeError:
-                logger.warning("Invalid metadata JSON for %s, skipping metadata sidecar", filename)
-        return uploaded_meta
+        def _upload_objects() -> bool:
+            minio_client.fput_object(
+                bucket_name=bucket,
+                object_name=object_key,
+                file_path=str(staged_path),
+            )
+            uploaded_meta = False
+            if meta:
+                try:
+                    parsed = json.loads(meta)
+                    payload = json.dumps(parsed, indent=2).encode("utf-8")
+                    minio_client.put_object(
+                        bucket_name=bucket,
+                        object_name=f"{object_key}.metadata.json",
+                        data=io.BytesIO(payload),
+                        length=len(payload),
+                        content_type="application/json",
+                    )
+                    uploaded_meta = True
+                except json.JSONDecodeError:
+                    logger.warning("Invalid metadata JSON for %s, skipping metadata sidecar", filename)
+            return uploaded_meta
 
-    try:
-        meta_uploaded = await asyncio.to_thread(_upload_objects)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Object storage upload failed: {exc}") from exc
+        try:
+            meta_uploaded = await asyncio.to_thread(_upload_objects)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Object storage upload failed: {exc}") from exc
 
     return {
         "ok": True,
@@ -258,7 +281,7 @@ async def _generate_metadata_json(description: str, filename: str) -> str:
             {
                 "metadataAttributes": {
                     "description": description,
-                    "filename": filename,
+                    "filename": filename or "document",
                 }
             },
             indent=2,

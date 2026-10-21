@@ -1,4 +1,4 @@
-"""Lexical RAG endpoints — non-blocking Meilisearch BM25 indexing and search."""
+"""Multi-Tenant Lexical RAG endpoints — non-blocking Meilisearch BM25 indexing with mandatory tenant filters."""
 
 from __future__ import annotations
 
@@ -6,16 +6,23 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import shutil
 import time
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from api.core.tenancy import (
+    TenantContext,
+    build_meili_tenant_filter,
+    get_tenant_context,
+    stream_upload_to_path,
+)
 from api.db import get_db
 from api.utils.doc_loader import ALLOWED_EXTENSIONS, MAX_FILE_SIZE, load_documents
+from api.workers.priority_queue import work_pool
 
 logger = logging.getLogger("nimagents.api.lexical_rag")
 router = APIRouter(prefix="/api/lexical-rag", tags=["lexical-rag"])
@@ -38,9 +45,13 @@ class LexicalQueryRequest(BaseModel):
 
 @router.get("")
 def list_sources():
+    ctx = get_tenant_context()
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM lexical_rag_sources ORDER BY created_at DESC"
+            """SELECT * FROM lexical_rag_sources
+               WHERE tenant_id = ? AND workspace_id = ?
+               ORDER BY created_at DESC""",
+            (ctx.tenant_id, ctx.workspace_id),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -59,68 +70,89 @@ async def upload_file(
             detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File exceeds 50 MB limit")
-
+    ctx = get_tenant_context()
     source_id = str(uuid.uuid4())
     short_id = source_id.replace("-", "")[:12]
-    meili_index = f"nimrag_{short_id}"
+    meili_index = f"nimrag_{ctx.tenant_id}_{short_id}"[:64]
 
-    source_dir = DATA_DIR / source_id
+    source_dir = DATA_DIR / ctx.tenant_id / ctx.workspace_id / source_id
     source_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = source_dir / (file.filename or "upload.bin")
-    await asyncio.to_thread(file_path.write_bytes, content)
+    file_path = source_dir / Path(file.filename or "upload.bin").name
+    await stream_upload_to_path(file, file_path, max_bytes=MAX_FILE_SIZE)
 
     with get_db() as conn:
         conn.execute(
             """INSERT INTO lexical_rag_sources
-               (id, name, source_type, file_path, meili_index,
+               (id, tenant_id, workspace_id, name, source_type, file_path, meili_index,
                 chunk_size, chunk_overlap, status, doc_count)
-               VALUES (?, ?, 'file', ?, ?, ?, ?, 'indexing', 0)""",
-            (source_id, name, str(file_path), meili_index, chunk_size, chunk_overlap),
+               VALUES (?, ?, ?, ?, 'file', ?, ?, ?, ?, 'indexing', 0)""",
+            (
+                source_id,
+                ctx.tenant_id,
+                ctx.workspace_id,
+                name,
+                str(file_path),
+                meili_index,
+                chunk_size,
+                chunk_overlap,
+            ),
         )
         conn.commit()
 
     try:
-        doc_count = await _index_into_meilisearch_async(
-            str(file_path), meili_index, chunk_size, chunk_overlap
+        doc_count = await work_pool.submit_background(
+            lambda: _index_into_meilisearch_async(
+                str(file_path),
+                meili_index,
+                source_id,
+                chunk_size,
+                chunk_overlap,
+                ctx=ctx,
+            ),
+            job_type="lexical_rag_index",
+            ctx=ctx,
+            persist=True,
         )
         with get_db() as conn:
             conn.execute(
-                "UPDATE lexical_rag_sources SET status='ready', doc_count=? WHERE id=?",
-                (doc_count, source_id),
+                "UPDATE lexical_rag_sources SET status='ready', doc_count=? WHERE id=? AND tenant_id=?",
+                (doc_count, source_id, ctx.tenant_id),
             )
             conn.commit()
     except Exception as exc:
         logger.exception("Lexical indexing failed for source %s", source_id)
         with get_db() as conn:
             conn.execute(
-                "UPDATE lexical_rag_sources SET status='error' WHERE id=?",
-                (source_id,),
+                "UPDATE lexical_rag_sources SET status='error' WHERE id=? AND tenant_id=?",
+                (source_id, ctx.tenant_id),
             )
             conn.commit()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM lexical_rag_sources WHERE id=?", (source_id,)
+            "SELECT * FROM lexical_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
     return dict(row)
 
 
 @router.delete("/{source_id}")
 async def delete_source(source_id: str):
+    ctx = get_tenant_context()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, meili_index FROM lexical_rag_sources WHERE id=?",
-            (source_id,),
+            "SELECT id, meili_index FROM lexical_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Source not found")
         meili_index = row["meili_index"]
-        conn.execute("DELETE FROM lexical_rag_sources WHERE id=?", (source_id,))
+        conn.execute(
+            "DELETE FROM lexical_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
+        )
         conn.commit()
 
     try:
@@ -129,7 +161,7 @@ async def delete_source(source_id: str):
     except Exception:
         logger.warning("Failed to delete Meilisearch index %s", meili_index)
 
-    source_dir = DATA_DIR / source_id
+    source_dir = DATA_DIR / ctx.tenant_id / ctx.workspace_id / source_id
     if source_dir.exists():
         await asyncio.to_thread(shutil.rmtree, source_dir, True)
 
@@ -138,9 +170,11 @@ async def delete_source(source_id: str):
 
 @router.post("/{source_id}/query")
 async def query_source(source_id: str, body: LexicalQueryRequest):
+    ctx = get_tenant_context()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM lexical_rag_sources WHERE id=?", (source_id,)
+            "SELECT * FROM lexical_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+            (source_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -149,7 +183,12 @@ async def query_source(source_id: str, body: LexicalQueryRequest):
 
     client = _get_meili_client()
     index = client.index(row["meili_index"])
-    results = await asyncio.to_thread(index.search, body.query, {"limit": body.k})
+    filter_expr = build_meili_tenant_filter(ctx, source_id=source_id)
+    results = await asyncio.to_thread(
+        index.search,
+        body.query,
+        {"limit": body.k, "filter": filter_expr},
+    )
 
     return {
         "results": [
@@ -162,7 +201,13 @@ async def query_source(source_id: str, body: LexicalQueryRequest):
     }
 
 
-def _prepare_chunks(file_path: str, chunk_size: int, chunk_overlap: int) -> list[dict]:
+def _prepare_chunks(
+    file_path: str,
+    source_id: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    ctx: TenantContext,
+) -> list[dict]:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     docs = load_documents(file_path)
@@ -176,7 +221,10 @@ def _prepare_chunks(file_path: str, chunk_size: int, chunk_overlap: int) -> list
         meta = chunk.metadata or {}
         documents.append(
             {
-                "id": str(i),
+                "id": f"{ctx.tenant_id}_{ctx.workspace_id}_{source_id}_{i}",
+                "tenant_id": ctx.tenant_id,
+                "workspace_id": ctx.workspace_id,
+                "source_id": source_id,
                 "chunk_id": i,
                 "content": chunk.page_content,
                 "metadata": json.dumps(meta) if isinstance(meta, dict) else str(meta),
@@ -188,11 +236,14 @@ def _prepare_chunks(file_path: str, chunk_size: int, chunk_overlap: int) -> list
 async def _index_into_meilisearch_async(
     file_path: str,
     meili_index: str,
+    source_id: str,
     chunk_size: int,
     chunk_overlap: int,
+    *,
+    ctx: TenantContext,
 ) -> int:
     documents = await asyncio.to_thread(
-        _prepare_chunks, file_path, chunk_size, chunk_overlap
+        _prepare_chunks, file_path, source_id, chunk_size, chunk_overlap, ctx
     )
     if not documents:
         return 0
@@ -200,9 +251,15 @@ async def _index_into_meilisearch_async(
     client = _get_meili_client()
     index = client.index(meili_index)
 
+    filter_task = await asyncio.to_thread(
+        index.update_filterable_attributes,
+        ["tenant_id", "workspace_id", "source_id"],
+    )
+    await _wait_for_task_async(client, filter_task.task_uid)
     await asyncio.to_thread(index.update_searchable_attributes, ["content"])
     await asyncio.to_thread(
-        index.update_displayed_attributes, ["content", "metadata", "chunk_id"]
+        index.update_displayed_attributes,
+        ["content", "metadata", "chunk_id", "tenant_id", "workspace_id", "source_id"],
     )
 
     batch_size = 500

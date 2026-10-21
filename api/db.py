@@ -1,12 +1,14 @@
-"""Database setup and connection helpers for nimAgents."""
+"""Database schema, tenant migration & connection helpers for nimAgents."""
 
 from __future__ import annotations
 
-import os
-import sqlite3
 from contextlib import contextmanager
+import os
 from pathlib import Path
+import sqlite3
 from typing import Generator
+
+from api.core.tenancy import DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID, get_tenant_context
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "nimagents.db"
 
@@ -34,6 +36,8 @@ def mask_secret(value: str | None) -> str:
 CREATE_MODELS = """
 CREATE TABLE IF NOT EXISTS models (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     provider TEXT NOT NULL DEFAULT 'nvidia_nim',
     base_url TEXT DEFAULT '',
@@ -50,16 +54,11 @@ CREATE TABLE IF NOT EXISTS models (
 );
 """
 
-_MIGRATE_MODELS_COLUMNS = [
-    ("role", "TEXT DEFAULT 'primary_chat'"),
-    ("fallback_model_id", "TEXT DEFAULT ''"),
-    ("context_window", "INTEGER DEFAULT 131072"),
-    ("supports_thinking", "BOOLEAN DEFAULT 0"),
-]
-
 CREATE_STORAGE_CONNECTIONS = """
 CREATE TABLE IF NOT EXISTS storage_connections (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     endpoint_url TEXT NOT NULL DEFAULT 'http://localhost:9000',
     bucket_name TEXT NOT NULL,
@@ -74,6 +73,8 @@ CREATE TABLE IF NOT EXISTS storage_connections (
 CREATE_GUARDRAIL_RULES = """
 CREATE TABLE IF NOT EXISTS guardrail_rules (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     category TEXT NOT NULL,
     pattern TEXT DEFAULT '',
@@ -86,6 +87,8 @@ CREATE TABLE IF NOT EXISTS guardrail_rules (
 CREATE_GUARDRAIL_EVENTS = """
 CREATE TABLE IF NOT EXISTS guardrail_events (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     rule_id TEXT,
     rule_name TEXT,
     category TEXT,
@@ -100,6 +103,8 @@ CREATE TABLE IF NOT EXISTS guardrail_events (
 CREATE_RAG_SOURCES = """
 CREATE TABLE IF NOT EXISTS rag_sources (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     description TEXT DEFAULT '',
     endpoint_url TEXT NOT NULL DEFAULT 'http://localhost:8081/v1',
@@ -116,12 +121,15 @@ CREATE TABLE IF NOT EXISTS rag_sources (
 CREATE_LOCAL_RAG_SOURCES = """
 CREATE TABLE IF NOT EXISTS local_rag_sources (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     source_type TEXT NOT NULL DEFAULT 'file',
     file_path TEXT DEFAULT '',
     chunk_size INTEGER DEFAULT 1000,
     chunk_overlap INTEGER DEFAULT 200,
     index_path TEXT DEFAULT '',
+    vector_dim INTEGER DEFAULT 384,
     embedding_model TEXT DEFAULT 'nvidia/llama-nemotron-embed-1b-v2',
     status TEXT DEFAULT 'pending',
     doc_count INTEGER DEFAULT 0,
@@ -134,6 +142,8 @@ CREATE TABLE IF NOT EXISTS local_rag_sources (
 CREATE_LEXICAL_RAG_SOURCES = """
 CREATE TABLE IF NOT EXISTS lexical_rag_sources (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     source_type TEXT NOT NULL DEFAULT 'file',
     file_path TEXT DEFAULT '',
@@ -145,6 +155,67 @@ CREATE TABLE IF NOT EXISTS lexical_rag_sources (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
+
+CREATE_BACKGROUND_JOBS = """
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    lane TEXT NOT NULL DEFAULT 'background',
+    job_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    progress INTEGER DEFAULT 0,
+    detail TEXT DEFAULT '',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_USAGE_LEDGER = """
+CREATE TABLE IF NOT EXISTS usage_ledger (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT DEFAULT 'anonymous',
+    provider TEXT NOT NULL DEFAULT 'nvidia_nim',
+    model_name TEXT NOT NULL,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    estimated_usd REAL DEFAULT 0.0,
+    cache_tier TEXT DEFAULT 'none',
+    latency_ms REAL DEFAULT 0.0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+TENANT_SCOPED_TABLES = (
+    "models",
+    "rag_sources",
+    "local_rag_sources",
+    "lexical_rag_sources",
+    "storage_connections",
+    "guardrail_rules",
+    "guardrail_events",
+    "background_jobs",
+    "usage_ledger",
+)
+
+_MIGRATE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    table: [
+        ("tenant_id", "TEXT NOT NULL DEFAULT 'default'"),
+        ("workspace_id", "TEXT NOT NULL DEFAULT 'default'"),
+    ]
+    for table in TENANT_SCOPED_TABLES
+}
+_MIGRATE_COLUMNS["models"].extend(
+    [
+        ("role", "TEXT DEFAULT 'primary_chat'"),
+        ("fallback_model_id", "TEXT DEFAULT ''"),
+        ("context_window", "INTEGER DEFAULT 131072"),
+        ("supports_thinking", "BOOLEAN DEFAULT 0"),
+    ]
+)
+_MIGRATE_COLUMNS["local_rag_sources"].append(("vector_dim", "INTEGER DEFAULT 384"))
 
 
 def _open_connection() -> sqlite3.Connection:
@@ -173,21 +244,52 @@ def get_db_raw() -> sqlite3.Connection:
     return _open_connection()
 
 
+def ensure_tenant_guardrails_seeded(conn: sqlite3.Connection, tenant_id: str | None = None) -> None:
+    """Ensure every tenant gets its baseline guardrail rule set on first access."""
+    tid = tenant_id or get_tenant_context().tenant_id or DEFAULT_TENANT_ID
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM guardrail_rules WHERE tenant_id = ?",
+        (tid,),
+    ).fetchone()[0]
+    if existing > 0:
+        return
+    prefix = "" if tid == DEFAULT_TENANT_ID else f"{tid}:"
+    for rule_id, name, category, pattern, action in _DEFAULT_GUARDRAIL_RULES:
+        conn.execute(
+            """INSERT OR IGNORE INTO guardrail_rules
+               (id, tenant_id, workspace_id, name, category, pattern, action, enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+            (f"{prefix}{rule_id}", tid, DEFAULT_WORKSPACE_ID, name, category, pattern, action),
+        )
+    conn.commit()
+
+
 def init_db() -> None:
     with get_db() as conn:
-        conn.execute(CREATE_MODELS)
-        conn.execute(CREATE_RAG_SOURCES)
-        conn.execute(CREATE_LOCAL_RAG_SOURCES)
-        conn.execute(CREATE_LEXICAL_RAG_SOURCES)
-        conn.execute(CREATE_STORAGE_CONNECTIONS)
-        conn.execute(CREATE_GUARDRAIL_RULES)
-        conn.execute(CREATE_GUARDRAIL_EVENTS)
-        for col_name, col_type in _MIGRATE_MODELS_COLUMNS:
-            try:
-                conn.execute(f"ALTER TABLE models ADD COLUMN {col_name} {col_type}")
-            except Exception:
-                pass
-        _seed_default_guardrail_rules(conn)
+        for ddl in (
+            CREATE_MODELS,
+            CREATE_RAG_SOURCES,
+            CREATE_LOCAL_RAG_SOURCES,
+            CREATE_LEXICAL_RAG_SOURCES,
+            CREATE_STORAGE_CONNECTIONS,
+            CREATE_GUARDRAIL_RULES,
+            CREATE_GUARDRAIL_EVENTS,
+            CREATE_BACKGROUND_JOBS,
+            CREATE_USAGE_LEDGER,
+        ):
+            conn.execute(ddl)
+
+        for table, cols in _MIGRATE_COLUMNS.items():
+            for col_name, col_type in cols:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+                except Exception:
+                    pass
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_tenant_ws ON {table}(tenant_id, workspace_id)"
+            )
+
+        ensure_tenant_guardrails_seeded(conn, DEFAULT_TENANT_ID)
         conn.commit()
 
 
@@ -199,15 +301,3 @@ _DEFAULT_GUARDRAIL_RULES = [
     ("secrets-api-key", "Generic API & Bearer Keys", "secrets", r"(?i)(api[_-]?key|apikey|secret[_-]?key|bearer)\s*[:=]\s*\S+", "warn"),
     ("harmful-prompt-injection", "Prompt Injection", "harmful", r"(?i)(ignore\s+(all\s+)?previous|disregard\s+(all\s+)?instructions)", "block"),
 ]
-
-
-def _seed_default_guardrail_rules(conn: sqlite3.Connection) -> None:
-    existing = conn.execute("SELECT COUNT(*) FROM guardrail_rules").fetchone()[0]
-    if existing > 0:
-        return
-    for rule_id, name, category, pattern, action in _DEFAULT_GUARDRAIL_RULES:
-        conn.execute(
-            """INSERT OR IGNORE INTO guardrail_rules (id, name, category, pattern, action, enabled)
-               VALUES (?, ?, ?, ?, ?, 1)""",
-            (rule_id, name, category, pattern, action),
-        )

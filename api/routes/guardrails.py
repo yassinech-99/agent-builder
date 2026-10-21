@@ -1,16 +1,17 @@
-"""Guardrail rules CRUD, content checking, and event logging."""
+"""Multi-tenant Guardrail rules CRUD, content checking, and event logging."""
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from api.db import get_db, mask_secret
+from api.core.tenancy import get_tenant_context
+from api.db import ensure_tenant_guardrails_seeded, get_db, mask_secret
 
 logger = logging.getLogger("nimagents.api.guardrails")
 router = APIRouter(prefix="/api/guardrails", tags=["guardrails"])
@@ -26,6 +27,8 @@ class RuleCreate(BaseModel):
 
 class RuleOut(RuleCreate):
     id: str
+    tenant_id: str = "default"
+    workspace_id: str = "default"
     created_at: str
 
 
@@ -63,8 +66,13 @@ class EventOut(BaseModel):
 
 @router.get("/rules", response_model=list[RuleOut])
 def list_rules():
+    ctx = get_tenant_context()
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM guardrail_rules ORDER BY created_at DESC").fetchall()
+        ensure_tenant_guardrails_seeded(conn, ctx.tenant_id)
+        rows = conn.execute(
+            "SELECT * FROM guardrail_rules WHERE tenant_id = ? ORDER BY created_at DESC",
+            (ctx.tenant_id,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -76,15 +84,30 @@ def create_rule(body: RuleCreate):
         except re.error as e:
             raise HTTPException(status_code=400, detail=f"Invalid regex: {e}")
 
+    ctx = get_tenant_context()
     rule_id = str(uuid.uuid4())
     with get_db() as conn:
+        ensure_tenant_guardrails_seeded(conn, ctx.tenant_id)
         conn.execute(
-            """INSERT INTO guardrail_rules (id, name, category, pattern, action, enabled)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (rule_id, body.name, body.category, body.pattern, body.action, body.enabled),
+            """INSERT INTO guardrail_rules
+               (id, tenant_id, workspace_id, name, category, pattern, action, enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                rule_id,
+                ctx.tenant_id,
+                ctx.workspace_id,
+                body.name,
+                body.category,
+                body.pattern,
+                body.action,
+                body.enabled,
+            ),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM guardrail_rules WHERE id = ?", (rule_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
+            (rule_id, ctx.tenant_id),
+        ).fetchone()
     return dict(row)
 
 
@@ -96,33 +119,50 @@ def update_rule(rule_id: str, body: RuleCreate):
         except re.error as e:
             raise HTTPException(status_code=400, detail=f"Invalid regex: {e}")
 
+    ctx = get_tenant_context()
     with get_db() as conn:
-        existing = conn.execute("SELECT id FROM guardrail_rules WHERE id = ?", (rule_id,)).fetchone()
+        ensure_tenant_guardrails_seeded(conn, ctx.tenant_id)
+        existing = conn.execute(
+            "SELECT id FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
+            (rule_id, ctx.tenant_id),
+        ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Rule not found")
         conn.execute(
             """UPDATE guardrail_rules SET name=?, category=?, pattern=?, action=?, enabled=?
-               WHERE id=?""",
-            (body.name, body.category, body.pattern, body.action, body.enabled, rule_id),
+               WHERE id=? AND tenant_id=?""",
+            (body.name, body.category, body.pattern, body.action, body.enabled, rule_id, ctx.tenant_id),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM guardrail_rules WHERE id = ?", (rule_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
+            (rule_id, ctx.tenant_id),
+        ).fetchone()
     return dict(row)
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/{rule_id}")
 def delete_rule(rule_id: str):
+    ctx = get_tenant_context()
     with get_db() as conn:
-        conn.execute("DELETE FROM guardrail_rules WHERE id = ?", (rule_id,))
+        cur = conn.execute(
+            "DELETE FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
+            (rule_id, ctx.tenant_id),
+        )
         conn.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Rule not found")
     return {"ok": True}
 
 
 @router.post("/check", response_model=CheckResponse)
 def check_text(body: CheckRequest):
+    ctx = get_tenant_context()
     with get_db() as conn:
+        ensure_tenant_guardrails_seeded(conn, ctx.tenant_id)
         rules = conn.execute(
-            "SELECT * FROM guardrail_rules WHERE enabled = 1"
+            "SELECT * FROM guardrail_rules WHERE tenant_id = ? AND enabled = 1",
+            (ctx.tenant_id,),
         ).fetchall()
 
     hits: list[CheckHit] = []
@@ -152,7 +192,7 @@ def check_text(body: CheckRequest):
                 redacted_text = re.sub(pattern, "[REDACTED]", redacted_text)
 
     if hits:
-        _log_events(hits, body.thread_id, body.assistant_id)
+        _log_events(hits, body.thread_id, body.assistant_id, ctx.tenant_id, ctx.workspace_id)
 
     has_block = any(h.action == "block" for h in hits)
     return CheckResponse(
@@ -164,24 +204,36 @@ def check_text(body: CheckRequest):
 
 @router.get("/events", response_model=list[EventOut])
 def list_events(limit: int = 50):
+    ctx = get_tenant_context()
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM guardrail_events ORDER BY created_at DESC LIMIT ?",
-            (min(limit, 200),),
+            """SELECT * FROM guardrail_events
+               WHERE tenant_id = ? AND workspace_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (ctx.tenant_id, ctx.workspace_id, min(limit, 200)),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _log_events(hits: list[CheckHit], thread_id: str, assistant_id: str) -> None:
+def _log_events(
+    hits: list[CheckHit],
+    thread_id: str,
+    assistant_id: str,
+    tenant_id: str,
+    workspace_id: str,
+) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
         for hit in hits:
             conn.execute(
                 """INSERT INTO guardrail_events
-                   (id, rule_id, rule_name, category, action, matched_text, thread_id, assistant_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, tenant_id, workspace_id, rule_id, rule_name, category, action,
+                    matched_text, thread_id, assistant_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
+                    tenant_id,
+                    workspace_id,
                     hit.rule_id,
                     hit.rule_name,
                     hit.category,

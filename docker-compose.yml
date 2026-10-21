@@ -1,4 +1,56 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: nimagents-postgres
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-nimagents}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-nimagents}"
+      POSTGRES_DB: "${POSTGRES_DB:-nimagents}"
+    volumes:
+      - nimagents_pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-rls.sql:/docker-entrypoint-initdb.d/01-init-rls.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nimagents}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: nimagents-pgbouncer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "6432:5432"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: "${POSTGRES_USER:-nimagents}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-nimagents}"
+      DB_NAME: "${POSTGRES_DB:-nimagents}"
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: 40
+      MAX_CLIENT_CONN: 1000
+      AUTH_TYPE: scram-sha-256
+
+  redis:
+    image: redis:8.0-alpine
+    container_name: nimagents-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - nimagents_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
+
   meilisearch:
     image: getmeili/meilisearch:v1.13
     container_name: nimagents-meilisearch
@@ -38,6 +90,8 @@ services:
       - nimagents_minio_data:/data
 
 volumes:
+  nimagents_pg_data:
+  nimagents_redis_data:
   nimagents_meili_data:
   nimagents_qdrant_data:
   nimagents_minio_data:

@@ -1,10 +1,10 @@
-"""nimAgents Control Plane API — FastAPI service for models, RAG, storage, MCP, voice, and guardrails."""
+"""nimAgents Control Plane API — Multi-Tenant FastAPI Service for Models, RAG, Storage, MCP, Voice, Scale & Guardrails."""
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import os
-from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
@@ -16,36 +16,49 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.db import init_db
-from api.routes import guardrails, lexical_rag, local_rag, mcp, models, rag, storage, voice
+from agent.inference_gateway import telemetry_collector
 from agent.tools import get_catalog_info
+from api.core.http_pool import (
+    close_shared_http_client,
+    get_shared_http_client,
+    loop_watchdog,
+)
+from api.core.tenancy import TenancyMiddleware
+from api.core.vector_store import vector_store
+from api.db import init_db
+from api.db_async import close_async_engines
+from api.middleware.admission import AdmissionMiddleware
+from api.routes import (
+    guardrails,
+    lexical_rag,
+    local_rag,
+    mcp,
+    models,
+    rag,
+    scale,
+    storage,
+    voice,
+)
+from api.workers.priority_queue import work_pool
 
 logger = logging.getLogger("nimagents.api")
 
 MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
 MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY", "")
 
-_shared_http_client: httpx.AsyncClient | None = None
-
 
 def get_http_client() -> httpx.AsyncClient:
-    """Return the process-wide pooled HTTP/2 AsyncClient (lazy-creating in tests if needed)."""
-    global _shared_http_client
-    if _shared_http_client is None or _shared_http_client.is_closed:
-        _shared_http_client = httpx.AsyncClient(
-            http2=True,
-            timeout=httpx.Timeout(30.0, connect=8.0),
-            limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
-        )
-    return _shared_http_client
+    """Return the process-wide pooled HTTP/2 AsyncClient (`max_connections=1000`)."""
+    return get_shared_http_client()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup / shutdown lifecycle."""
-    global _shared_http_client
-    logger.info("Initialising nimAgents database…")
+    """Startup / shutdown lifecycle for pooled I/O, telemetry flusher, and loop watchdog."""
+    logger.info("Initialising nimAgents multi-tenant database…")
     init_db()
+    loop_watchdog.start()
+    telemetry_collector.start()
     client = get_http_client()
 
     headers: dict[str, str] = {}
@@ -66,9 +79,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("nimAgents Control Plane API ready")
     yield
-    if _shared_http_client and not _shared_http_client.is_closed:
-        await _shared_http_client.aclose()
-        _shared_http_client = None
+    await telemetry_collector.stop()
+    await loop_watchdog.stop()
+    await work_pool.stop()
+    await vector_store.close()
+    await close_async_engines()
+    await close_shared_http_client()
     logger.info("nimAgents Control Plane API shutting down")
 
 
@@ -77,6 +93,12 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Note: Starlette executes `add_middleware` LIFO (last added wraps outermost).
+# Execution order on incoming request:
+#   CORS -> TenancyMiddleware (sets ContextVar) -> AdmissionMiddleware (enforces tenant quotas) -> Router
+app.add_middleware(AdmissionMiddleware)
+app.add_middleware(TenancyMiddleware)
 
 allowed_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
 allowed_origins = (
@@ -111,6 +133,7 @@ app.include_router(lexical_rag.router)
 app.include_router(voice.router)
 app.include_router(storage.router)
 app.include_router(guardrails.router)
+app.include_router(scale.router)
 
 
 @app.get("/api/tools/catalog")
@@ -127,5 +150,8 @@ async def health():
         "status": "ok",
         "service": "nimagents-api",
         "version": "1.0.0",
+        "tenancy": True,
+        "vector_engine": "qdrant",
+        "admission_control": True,
         "docs": "/docs",
     }

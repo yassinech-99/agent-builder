@@ -53,11 +53,11 @@ def json_explorer(payload: str) -> str:
 
 
 @tool
-def sleep_tool(seconds: int) -> str:
-    """Sleep for the specified number of seconds (max 30). Use to throttle or wait."""
-    import time
+async def sleep_tool(seconds: int) -> str:
+    """Sleep for the specified number of seconds (max 30). Non-blocking async wait."""
+    import asyncio
     seconds = min(max(seconds, 1), 30)
-    time.sleep(seconds)
+    await asyncio.sleep(seconds)
     return f"Slept for {seconds} seconds."
 
 
@@ -227,18 +227,28 @@ def _make_requests_patch(_cfg: dict[str, str]):
 
 def _make_gmail_toolkit(cfg: dict[str, str]):
     from langchain_community.agent_toolkits import GmailToolkit
-    if cfg.get("GMAIL_CREDENTIALS_FILE"):
-        os.environ.setdefault("GMAIL_CREDENTIALS_FILE", cfg["GMAIL_CREDENTIALS_FILE"])
-    toolkit = GmailToolkit()
+    from langchain_community.tools.gmail.utils import (
+        build_resource_service,
+        get_gmail_credentials,
+    )
+
+    # Scoped per-call credentials — NEVER mutate global process `os.environ` across tenants
+    creds_file = cfg.get("GMAIL_CREDENTIALS_FILE") or os.getenv("GMAIL_CREDENTIALS_FILE", "credentials.json")
+    credentials = get_gmail_credentials(client_secrets_file=creds_file)
+    api_resource = build_resource_service(credentials=credentials)
+    toolkit = GmailToolkit(api_resource=api_resource)
     return toolkit.get_tools()
 
 
 def _make_o365_toolkit(cfg: dict[str, str]):
+    from O365 import Account
     from langchain_community.agent_toolkits import O365Toolkit
-    for k in ("O365_CLIENT_ID", "O365_CLIENT_SECRET", "O365_TENANT_ID"):
-        if cfg.get(k):
-            os.environ.setdefault(k, cfg[k])
-    toolkit = O365Toolkit()
+
+    client_id = cfg.get("O365_CLIENT_ID") or os.getenv("O365_CLIENT_ID", "")
+    client_secret = cfg.get("O365_CLIENT_SECRET") or os.getenv("O365_CLIENT_SECRET", "")
+    tenant = cfg.get("O365_TENANT_ID") or os.getenv("O365_TENANT_ID", "common")
+    account = Account((client_id, client_secret), tenant_id=tenant)
+    toolkit = O365Toolkit(account=account)
     return toolkit.get_tools()
 
 
@@ -246,8 +256,10 @@ def _make_o365_toolkit(cfg: dict[str, str]):
 
 def _make_file_management(_cfg: dict[str, str]):
     from langchain_community.agent_toolkits import FileManagementToolkit
-    os.makedirs("./workspace", exist_ok=True)
-    toolkit = FileManagementToolkit(root_dir="./workspace")
+    from api.core.tenancy import scoped_workspace_dir
+
+    isolated_dir = scoped_workspace_dir("./workspace")
+    toolkit = FileManagementToolkit(root_dir=str(isolated_dir))
     return toolkit.get_tools()
 
 

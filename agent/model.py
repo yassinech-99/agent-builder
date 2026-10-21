@@ -225,10 +225,12 @@ def get_model(
     *,
     role: str | None = None,
     priority: int | None = None,
+    prefix_hash: str = "",
+    thread_id: str = "",
 ) -> Any:
     """Resolve and instantiate a LangChain chat model with optional fallback chain.
 
-    Resolution order:
+    Resolution order (strictly scoped to active `TenantContext`):
       1. Explicit `model_id` row from database
       2. Model row matching `role` (`primary_chat`, `fast_router`, `compactor`, `contextualizer`)
       3. Model row marked `is_default = 1`
@@ -243,13 +245,23 @@ def get_model(
         cfg = _load_default_model_config()
 
     if cfg is not None:
-        primary = create_model_from_config(cfg, priority=priority)
+        primary = create_model_from_config(
+            cfg,
+            priority=priority,
+            prefix_hash=prefix_hash,
+            thread_id=thread_id,
+        )
         fallback_id = (cfg.get("fallback_model_id") or "").strip()
         if fallback_id and fallback_id != cfg.get("id"):
             fb_cfg = _load_model_config_by_id(fallback_id)
             if fb_cfg is not None:
                 try:
-                    fallback_model = create_model_from_config(fb_cfg, priority=priority)
+                    fallback_model = create_model_from_config(
+                        fb_cfg,
+                        priority=priority,
+                        prefix_hash=prefix_hash,
+                        thread_id=thread_id,
+                    )
                     return primary.with_fallbacks([fallback_model])
                 except Exception as exc:
                     logger.warning("Failed to attach fallback model %s: %s", fallback_id, exc)
@@ -286,16 +298,21 @@ def get_model(
             "max_tokens": None,
         },
         priority=priority,
+        prefix_hash=prefix_hash,
+        thread_id=thread_id,
     )
 
 
 def _load_model_config_by_id(model_id: str) -> dict[str, Any] | None:
     try:
+        from api.core.tenancy import get_tenant_context
         from api.db import get_db
 
+        tid = get_tenant_context().tenant_id
         with get_db() as conn:
             row = conn.execute(
-                "SELECT * FROM models WHERE id = ?", (model_id,)
+                "SELECT * FROM models WHERE id = ? AND tenant_id = ?",
+                (model_id, tid),
             ).fetchone()
             return dict(row) if row else None
     except Exception:
@@ -304,12 +321,14 @@ def _load_model_config_by_id(model_id: str) -> dict[str, Any] | None:
 
 def _load_model_config_by_role(role: str) -> dict[str, Any] | None:
     try:
+        from api.core.tenancy import get_tenant_context
         from api.db import get_db
 
+        tid = get_tenant_context().tenant_id
         with get_db() as conn:
             row = conn.execute(
-                "SELECT * FROM models WHERE role = ? ORDER BY is_default DESC, created_at DESC LIMIT 1",
-                (role,),
+                "SELECT * FROM models WHERE role = ? AND tenant_id = ? ORDER BY is_default DESC, created_at DESC LIMIT 1",
+                (role, tid),
             ).fetchone()
             return dict(row) if row else None
     except Exception:
@@ -318,11 +337,14 @@ def _load_model_config_by_role(role: str) -> dict[str, Any] | None:
 
 def _load_default_model_config() -> dict[str, Any] | None:
     try:
+        from api.core.tenancy import get_tenant_context
         from api.db import get_db
 
+        tid = get_tenant_context().tenant_id
         with get_db() as conn:
             row = conn.execute(
-                "SELECT * FROM models WHERE is_default = 1 ORDER BY created_at DESC LIMIT 1"
+                "SELECT * FROM models WHERE is_default = 1 AND tenant_id = ? ORDER BY created_at DESC LIMIT 1",
+                (tid,),
             ).fetchone()
             return dict(row) if row else None
     except Exception:
@@ -355,17 +377,27 @@ def create_model_from_config(
     cfg: dict[str, Any],
     *,
     priority: int | None = None,
+    prefix_hash: str = "",
+    thread_id: str = "",
 ) -> Any:
-    """Instantiate a LangChain BaseChatModel from a model config dictionary."""
+    """Instantiate a LangChain BaseChatModel with KV-cache-aware replica routing."""
+    from agent.inference_gateway import prefix_router
+
     provider = (cfg.get("provider") or "nvidia_nim").strip().lower()
     model_name = (cfg.get("model_name") or DEFAULT_NIM_MODEL).strip()
     temperature = float(cfg.get("temperature") if cfg.get("temperature") is not None else 0.7)
     max_tokens = cfg.get("max_tokens") or None
-    api_key, base_url = resolve_provider_credentials(
+    api_key, raw_base_url = resolve_provider_credentials(
         provider,
         api_key=cfg.get("api_key") or "",
         base_url=cfg.get("base_url") or "",
     )
+    base_url = prefix_router.select_endpoint(
+        raw_base_url,
+        model_id=model_name,
+        prefix_hash=prefix_hash,
+        thread_id=thread_id,
+    ) or raw_base_url
 
     if provider == "nvidia_dynamo":
         from langchain_nvidia_ai_endpoints import ChatNVIDIADynamo
