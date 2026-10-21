@@ -188,6 +188,30 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
 );
 """
 
+CREATE_CUSTOM_TOOLS = """
+CREATE TABLE IF NOT EXISTS custom_tools (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    namespaced_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'openapi',
+    method TEXT NOT NULL DEFAULT 'GET',
+    url_template TEXT NOT NULL,
+    headers_json TEXT NOT NULL DEFAULT '{}',
+    input_schema_json TEXT NOT NULL DEFAULT '{}',
+    input_examples_json TEXT NOT NULL DEFAULT '[]',
+    defer_loading BOOLEAN DEFAULT 1,
+    requires_approval BOOLEAN DEFAULT 0,
+    side_effect_level TEXT NOT NULL DEFAULT 'read',
+    timeout_seconds REAL DEFAULT 20.0,
+    max_output_tokens INTEGER DEFAULT 2000,
+    source_spec_title TEXT DEFAULT '',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 TENANT_SCOPED_TABLES = (
     "models",
     "rag_sources",
@@ -198,6 +222,7 @@ TENANT_SCOPED_TABLES = (
     "guardrail_events",
     "background_jobs",
     "usage_ledger",
+    "custom_tools",
 )
 
 _MIGRATE_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -276,6 +301,7 @@ def init_db() -> None:
             CREATE_GUARDRAIL_EVENTS,
             CREATE_BACKGROUND_JOBS,
             CREATE_USAGE_LEDGER,
+            CREATE_CUSTOM_TOOLS,
         ):
             conn.execute(ddl)
 

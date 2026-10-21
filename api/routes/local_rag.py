@@ -337,30 +337,33 @@ async def upload_file(
     ctx = get_tenant_context()
     source_id = str(uuid.uuid4())
     source_dir = DATA_DIR / ctx.tenant_id / ctx.workspace_id / source_id
-    source_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(lambda: source_dir.mkdir(parents=True, exist_ok=True))
 
     file_path = source_dir / Path(file.filename or "upload.bin").name
     await stream_upload_to_path(file, file_path, max_bytes=MAX_FILE_SIZE)
 
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO local_rag_sources
-               (id, tenant_id, workspace_id, name, source_type, file_path, chunk_size, chunk_overlap,
-                index_path, embedding_model, status, doc_count)
-               VALUES (?, ?, ?, ?, 'file', ?, ?, ?, ?, ?, 'indexing', 0)""",
-            (
-                source_id,
-                ctx.tenant_id,
-                ctx.workspace_id,
-                name,
-                str(file_path),
-                chunk_size,
-                chunk_overlap,
-                f"qdrant://{source_id}",
-                embedding_model,
-            ),
-        )
-        conn.commit()
+    def _insert_initial() -> None:
+        with get_db() as conn:
+            conn.execute(
+                """INSERT INTO local_rag_sources
+                   (id, tenant_id, workspace_id, name, source_type, file_path, chunk_size, chunk_overlap,
+                    index_path, embedding_model, status, doc_count)
+                   VALUES (?, ?, ?, ?, 'file', ?, ?, ?, ?, ?, 'indexing', 0)""",
+                (
+                    source_id,
+                    ctx.tenant_id,
+                    ctx.workspace_id,
+                    name,
+                    str(file_path),
+                    chunk_size,
+                    chunk_overlap,
+                    f"qdrant://{source_id}",
+                    embedding_model,
+                ),
+            )
+            conn.commit()
+
+    await asyncio.to_thread(_insert_initial)
 
     try:
         doc_count, vec_dim = await work_pool.submit_background(
@@ -376,28 +379,34 @@ async def upload_file(
             ctx=ctx,
             persist=True,
         )
-        with get_db() as conn:
-            conn.execute(
-                "UPDATE local_rag_sources SET status='ready', doc_count=?, vector_dim=? WHERE id=? AND tenant_id=?",
-                (doc_count, vec_dim, source_id, ctx.tenant_id),
-            )
-            conn.commit()
+
+        def _mark_ready() -> dict[str, Any]:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE local_rag_sources SET status='ready', doc_count=?, vector_dim=? WHERE id=? AND tenant_id=?",
+                    (doc_count, vec_dim, source_id, ctx.tenant_id),
+                )
+                conn.commit()
+                saved = conn.execute(
+                    "SELECT * FROM local_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+                    (source_id, ctx.tenant_id, ctx.workspace_id),
+                ).fetchone()
+            return dict(saved)
+
+        return await asyncio.to_thread(_mark_ready)
     except Exception as exc:
         logger.exception("Qdrant vector indexing failed for source %s", source_id)
-        with get_db() as conn:
-            conn.execute(
-                "UPDATE local_rag_sources SET status='error' WHERE id=? AND tenant_id=?",
-                (source_id, ctx.tenant_id),
-            )
-            conn.commit()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM local_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
-            (source_id, ctx.tenant_id, ctx.workspace_id),
-        ).fetchone()
-    return dict(row)
+        def _mark_error() -> None:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE local_rag_sources SET status='error' WHERE id=? AND tenant_id=?",
+                    (source_id, ctx.tenant_id),
+                )
+                conn.commit()
+
+        await asyncio.to_thread(_mark_error)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/bucket-import")
@@ -496,18 +505,23 @@ async def delete_source(source_id: str):
 @router.post("/{source_id}/query")
 async def query_source(source_id: str, body: QueryRequest):
     ctx = get_tenant_context()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM local_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
-            (source_id, ctx.tenant_id, ctx.workspace_id),
-        ).fetchone()
+
+    def _fetch_source() -> dict[str, Any] | None:
+        with get_db() as conn:
+            found = conn.execute(
+                "SELECT * FROM local_rag_sources WHERE id=? AND tenant_id=? AND workspace_id=?",
+                (source_id, ctx.tenant_id, ctx.workspace_id),
+            ).fetchone()
+        return dict(found) if found else None
+
+    row = await asyncio.to_thread(_fetch_source)
     if not row:
         raise HTTPException(status_code=404, detail="Source not found")
     if row["status"] != "ready":
         raise HTTPException(status_code=400, detail="Source not ready")
 
     results = await search_local_source_async(
-        dict(row),
+        row,
         body.query,
         body.k,
         body.rerank,

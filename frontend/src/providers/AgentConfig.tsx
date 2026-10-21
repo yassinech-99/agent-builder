@@ -7,6 +7,8 @@ export interface MCPServerConfig {
   selected_tools: string[];
 }
 
+export type ToolLoadingMode = "auto" | "deferred" | "eager";
+
 export interface AgentConfig {
   agent_name: string;
   system_prompt: string;
@@ -18,6 +20,9 @@ export interface AgentConfig {
   local_rag_source_ids: string[];
   lexical_rag_source_ids: string[];
   voice_enabled: boolean;
+  tool_loading_mode?: ToolLoadingMode;
+  enable_programmatic_tools?: boolean;
+  approval_required_tools?: string[];
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -31,6 +36,9 @@ const DEFAULT_CONFIG: AgentConfig = {
   local_rag_source_ids: [],
   lexical_rag_source_ids: [],
   voice_enabled: false,
+  tool_loading_mode: "auto",
+  enable_programmatic_tools: true,
+  approval_required_tools: [],
 };
 
 interface AgentConfigContextType {

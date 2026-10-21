@@ -44,12 +44,17 @@ export function StepReview() {
 
         <div className="p-4">
           <p className="text-muted-foreground text-xs font-medium uppercase">
-            Prebuilt Tools ({config.enabled_prebuilt_tools.length})
+            Prebuilt &amp; OpenAPI Tools ({config.enabled_prebuilt_tools.length})
           </p>
           <p className="mt-1 text-sm">
             {config.enabled_prebuilt_tools.length > 0
               ? config.enabled_prebuilt_tools.join(", ")
-              : "None"}
+              : "Default Core Tools (calculator, current_datetime)"}
+          </p>
+          <p className="text-muted-foreground mt-1 text-xs">
+            Loading Strategy: <code>{config.tool_loading_mode ?? "auto"}</code> · Programmatic{" "}
+            <code>orchestrate_tools</code>:{" "}
+            <strong>{config.enable_programmatic_tools ?? true ? "Enabled" : "Disabled"}</strong>
           </p>
         </div>
 

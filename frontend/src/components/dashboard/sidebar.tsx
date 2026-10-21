@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   MessageSquare,
   Bot,
+  Wrench,
   Cpu,
   Database,
   HardDrive,
@@ -27,6 +28,7 @@ import { NIMAGENTS_STORAGE } from "@/lib/runtime-urls";
 const NAV_ITEMS = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/tools", label: "Tools", icon: Wrench },
   { href: "/models", label: "Models", icon: Cpu },
   { href: "/rag", label: "RAG", icon: Database },
   { href: "/storage", label: "Storage", icon: HardDrive },
