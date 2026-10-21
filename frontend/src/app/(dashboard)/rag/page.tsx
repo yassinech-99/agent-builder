@@ -78,10 +78,10 @@ interface LexicalRagSource {
   created_at: string;
 }
 
-type Tab = "nim" | "local" | "lexical";
+type Tab = "contextual" | "nim" | "local" | "lexical";
 
 export default function RagPage() {
-  const [tab, setTab] = useState<Tab>("local");
+  const [tab, setTab] = useState<Tab>("contextual");
 
   return (
     <div className="flex h-full flex-col">
@@ -89,14 +89,19 @@ export default function RagPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">RAG &amp; Knowledge</h1>
           <p className="text-muted-foreground text-sm">
-            NVIDIA NIM Retrievers, Nemotron Vector Embeddings + Reranking &amp; Meilisearch BM25
+            Contextual Parent-Child Hybrid RAG, `NVIDIARerank` Debugger, Nemotron Embeddings &amp; Meilisearch BM25
           </p>
         </div>
       </div>
 
-      <div className="flex gap-1 border-b px-6 pt-2">
+      <div className="flex flex-wrap gap-1 border-b px-6 pt-2">
         {(
           [
+            {
+              key: "contextual",
+              icon: Sparkles,
+              label: "Contextual Hybrid RAG & Rank Debugger",
+            },
             { key: "local", icon: HardDrive, label: "Vector RAG (NIM / Local)" },
             { key: "lexical", icon: TextSearch, label: "Lexical BM25 (Meilisearch)" },
             { key: "nim", icon: BookOpen, label: "NIM RAG Endpoints" },
@@ -118,9 +123,251 @@ export default function RagPage() {
       </div>
 
       <div className="flex-1 overflow-auto">
+        {tab === "contextual" && <ContextualHybridRagTab />}
         {tab === "nim" && <NimRagTab />}
         {tab === "local" && <LocalRagTab />}
         {tab === "lexical" && <LexicalRagTab />}
+      </div>
+    </div>
+  );
+}
+
+function ContextualHybridRagTab() {
+  const [collections, setCollections] = useState<any[]>([]);
+  const [colName, setColName] = useState("");
+  const [activeProgress, setActiveProgress] = useState<{
+    progress: number;
+    detail: string;
+    status: string;
+  } | null>(null);
+  const [debugQuery, setDebugQuery] = useState("");
+  const [debugResult, setDebugResult] = useState<any | null>(null);
+
+  const loadCollections = useCallback(async () => {
+    const res = await fetch(`${getBuilderApiUrl()}/api/rag-pipeline/collections`, {
+      cache: "no-store",
+    });
+    if (res.ok) setCollections(await res.json());
+  }, []);
+
+  useEffect(() => {
+    void loadCollections();
+  }, [loadCollections]);
+
+  const handleCreateCollection = async () => {
+    if (!colName.trim()) return;
+    const res = await fetch(`${getBuilderApiUrl()}/api/rag-pipeline/collections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: colName.trim() }),
+    });
+    if (res.ok) {
+      setColName("");
+      await loadCollections();
+    }
+  };
+
+  const handleUploadAsync = async (sourceId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("contextual_enrich", "true");
+    form.append("async_mode", "true");
+
+    const res = await fetch(
+      `${getBuilderApiUrl()}/api/rag-pipeline/collections/${sourceId}/ingest`,
+      { method: "POST", body: form },
+    );
+    if (!res.ok) return;
+    const queued = await res.json();
+    setActiveProgress({
+      progress: 5,
+      detail: `Queued ${file.name} (${queued.job_id})`,
+      status: "queued",
+    });
+
+    const es = new EventSource(
+      `${getBuilderApiUrl()}/api/rag-pipeline/jobs/${queued.job_id}/stream`,
+    );
+    es.addEventListener("progress", (ev: MessageEvent) => {
+      try {
+        const snap = JSON.parse(ev.data);
+        setActiveProgress(snap);
+        if (snap.status === "completed" || snap.status === "error") {
+          es.close();
+          void loadCollections();
+        }
+      } catch {
+        es.close();
+      }
+    });
+    es.onerror = () => es.close();
+  };
+
+  const handleRunRankDebugger = async () => {
+    if (!debugQuery.trim()) return;
+    const res = await fetch(`${getBuilderApiUrl()}/api/rag-pipeline/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: debugQuery.trim(),
+        top_k: 5,
+        rerank: true,
+        enable_query_rewrite: true,
+      }),
+    });
+    if (res.ok) {
+      setDebugResult(await res.json());
+    }
+  };
+
+  return (
+    <div className="space-y-6 p-6">
+      <div className="bg-card flex flex-wrap items-center gap-2 rounded-xl border p-4 shadow-xs">
+        <Input
+          placeholder="New Contextual Hybrid Collection name (e.g., H200 Architecture Runbooks)..."
+          value={colName}
+          onChange={(e) => setColName(e.target.value)}
+          className="max-w-md text-sm"
+        />
+        <Button size="sm" onClick={() => void handleCreateCollection()}>
+          <Plus className="mr-1.5 h-4 w-4" />
+          Create Contextual Collection
+        </Button>
+      </div>
+
+      {activeProgress && (
+        <div className="bg-card space-y-2 rounded-xl border p-4 text-xs shadow-xs">
+          <div className="flex items-center justify-between font-mono">
+            <span>{activeProgress.detail}</span>
+            <span className="font-bold">{activeProgress.progress}%</span>
+          </div>
+          <div className="bg-muted h-2 w-full overflow-hidden rounded-full">
+            <div
+              className="bg-primary h-full transition-all duration-300"
+              style={{ width: `${activeProgress.progress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        {collections.map((c) => (
+          <div key={c.id} className="bg-card space-y-3 rounded-xl border p-4 shadow-xs">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold">{c.name}</h3>
+                <p className="text-muted-foreground font-mono text-xs">
+                  {c.id} · {c.doc_count} indexed contextual chunks
+                </p>
+              </div>
+              <label className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium">
+                <Upload className="h-3.5 w-3.5" />
+                Stream Upload (`202` SSE)
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".md,.markdown,.txt,.pdf,.docx,.csv,.json"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleUploadAsync(c.id, f);
+                  }}
+                />
+              </label>
+            </div>
+            {Array.isArray(c.documents) && c.documents.length > 0 && (
+              <div className="space-y-1 border-t pt-2 text-xs">
+                {c.documents.map((d: any) => (
+                  <div
+                    key={d.id}
+                    className="text-muted-foreground flex items-center justify-between font-mono text-[11px]"
+                  >
+                    <span>
+                      {d.filename} ({d.parent_count}p / {d.child_count}c)
+                    </span>
+                    <span>sha256:{String(d.sha256_hash).slice(0, 10)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Interactive 6-Stage Retrieval Rank Debugger */}
+      <div className="bg-card space-y-4 rounded-xl border p-5 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-base font-semibold">
+              6-Stage Hybrid Retrieval &amp; `NVIDIARerank` Score Debugger
+            </h2>
+            <p className="text-muted-foreground text-xs">
+              Inspect Dense Rank + Contextual BM25 Rank → RRF ($k=60$) → Cross-Encoder Rerank → Deduped Parent Evidence
+            </p>
+          </div>
+          {debugResult && (
+            <span className="rounded bg-emerald-500/15 px-2.5 py-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+              {debugResult.latency_ms}ms · Grade={debugResult.relevance_grade}
+              {debugResult.rewritten_query
+                ? ` · Rewritten="${debugResult.rewritten_query}"`
+                : ""}
+            </span>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+            <Input
+              value={debugQuery}
+              onChange={(e) => setDebugQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void handleRunRankDebugger()}
+              placeholder="Run hybrid query & inspect Dense / BM25 / RRF / Rerank scores..."
+              className="pl-9 text-sm"
+            />
+          </div>
+          <Button onClick={() => void handleRunRankDebugger()}>
+            Debug Ranks
+          </Button>
+        </div>
+
+        {debugResult?.citations?.length > 0 && (
+          <div className="space-y-3">
+            {debugResult.citations.map((cit: any) => (
+              <div
+                key={cit.citation_id}
+                className="bg-muted/30 space-y-2 rounded-xl border p-4 text-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-semibold">
+                    <span className="text-primary mr-1.5 font-mono">
+                      [{cit.citation_id}]
+                    </span>
+                    {cit.heading_path}
+                  </div>
+                  <div className="text-muted-foreground flex flex-wrap gap-2 font-mono text-[11px]">
+                    <span>Dense #{cit.dense_rank ?? "—"}</span>
+                    <span>·</span>
+                    <span>BM25 #{cit.bm25_rank ?? "—"}</span>
+                    <span>·</span>
+                    <span>RRF {cit.rrf_score}</span>
+                    <span>·</span>
+                    <span>Rerank {cit.rerank_score}</span>
+                    <span>·</span>
+                    <span className="text-foreground font-bold">
+                      Final {cit.final_score}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-muted-foreground font-mono text-[11px]">
+                  {cit.context_prefix}
+                </p>
+                <pre className="bg-background overflow-auto rounded-lg border p-3 font-mono text-[11px] whitespace-pre-wrap">
+                  {cit.full_parent_markdown}
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

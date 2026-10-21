@@ -15,6 +15,7 @@ import { useQueryState, parseAsBoolean } from "nuqs";
 import { GenericInterruptView } from "./generic-interrupt";
 import { useArtifact } from "../artifact";
 import { Brain, ChevronDown, ChevronRight } from "lucide-react";
+import { GroundedCitationsDrawerBar } from "./citations";
 
 /**
  * Extracts `<think>...</think>` reasoning blocks (including unclosed in-flight
@@ -262,6 +263,10 @@ export function AssistantMessage({
             {answer.length > 0 && (
               <div className="py-1">
                 <MarkdownText>{answer}</MarkdownText>
+                <GroundedCitationsDrawerBar
+                  messages={thread.messages}
+                  messageId={message?.id}
+                />
               </div>
             )}
 

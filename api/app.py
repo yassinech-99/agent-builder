@@ -37,6 +37,7 @@ from api.routes import (
     memories as memories_router,
     models,
     rag,
+    rag_pipeline as rag_pipeline_router,
     scale,
     sessions as sessions_router,
     skills as skills_router,
@@ -144,6 +145,7 @@ app.include_router(skills_router.router)
 app.include_router(context_router.router)
 app.include_router(sessions_router.router)
 app.include_router(memories_router.router)
+app.include_router(rag_pipeline_router.router)
 
 
 @app.get("/")
@@ -159,3 +161,12 @@ async def health():
         "admission_control": True,
         "docs": "/docs",
     }
+
+
+# Freeze immortal module/schema objects after router registration so Generation-2 GC sweeps
+# never pause the main `asyncio` event loop under high-concurrency multi-user bursts!
+import gc as _gc
+
+_gc.collect()
+_gc.freeze()
+_gc.set_threshold(50_000, 20, 20)

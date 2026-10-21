@@ -36,6 +36,7 @@ from agent.context_engine import (
 from agent.inference_gateway import compute_prefix_hash
 from agent.memory_engine import build_memory_runtime_tools, memory_engine
 from api.services.memory_consolidator import memory_consolidator
+from api.services.rag_pipeline import rag_pipeline
 from agent.model import get_model, sanitize_multimodal_messages
 from agent.registry import (
     PINNED_CORE_TOOL_IDS,
@@ -607,6 +608,21 @@ async def make_graph(config: RunnableConfig):
         local_rag_ids = agent_config.get("local_rag_source_ids", [])
         if local_rag_ids:
             base_tools.append(_build_local_rag_tool(local_rag_ids, run_ctx))
+
+        @tool
+        async def contextual_rag_search(query: str, top_k: int = 4) -> str:
+            """Retrieve grounded parent-section passages with `[1]`, `[2]` source evidence citations via Hybrid Dense + Contextual BM25 + Reranking."""
+            res = await rag_pipeline.hybrid_retrieve(
+                query,
+                source_ids=local_rag_ids or None,
+                top_k=max(1, min(top_k, 10)),
+                rerank=True,
+                enable_query_rewrite=True,
+                ctx=run_ctx,
+            )
+            return json.dumps(res, ensure_ascii=False)
+
+        base_tools.append(contextual_rag_search)
 
         lexical_ids = agent_config.get("lexical_rag_source_ids", [])
         if lexical_ids:

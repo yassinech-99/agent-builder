@@ -353,6 +353,54 @@ CREATE TABLE IF NOT EXISTS procedural_memories (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS rag_documents (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    source_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    sha256_hash TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'text/markdown',
+    byte_size INTEGER DEFAULT 0,
+    parent_count INTEGER DEFAULT 0,
+    child_count INTEGER DEFAULT 0,
+    contextual_enriched BOOLEAN DEFAULT TRUE,
+    storage_uri TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'ready',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS rag_parent_chunks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    source_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    doc_name TEXT NOT NULL DEFAULT '',
+    section_index INTEGER DEFAULT 0,
+    heading_path TEXT NOT NULL DEFAULT '',
+    raw_markdown TEXT NOT NULL DEFAULT '',
+    token_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS rag_child_chunks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    source_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    doc_name TEXT NOT NULL DEFAULT '',
+    heading_path TEXT NOT NULL DEFAULT '',
+    child_index INTEGER DEFAULT 0,
+    raw_text TEXT NOT NULL DEFAULT '',
+    context_prefix TEXT NOT NULL DEFAULT '',
+    enriched_text TEXT NOT NULL DEFAULT '',
+    token_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable & FORCE Row-Level Security across every multi-tenant table
 DO $$
 DECLARE
@@ -379,7 +427,10 @@ BEGIN
         'memory_blocks',
         'semantic_memories',
         'episodic_memories',
-        'procedural_memories'
+        'procedural_memories',
+        'rag_documents',
+        'rag_parent_chunks',
+        'rag_child_chunks'
     ]
     LOOP
         EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%I_tenant_ws ON %I (tenant_id, workspace_id)', tbl, tbl);
