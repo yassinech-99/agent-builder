@@ -85,6 +85,82 @@ export function ToolResult({ message }: { message: ToolMessage }) {
   const contentStr = isJsonContent
     ? JSON.stringify(parsedContent, null, 2)
     : redactSensitiveText(String(message.content));
+
+  if (
+    isJsonContent &&
+    parsedContent &&
+    (parsedContent.type === "subagent_trace" ||
+      parsedContent.type === "subagent_parallel_trace")
+  ) {
+    const traces =
+      parsedContent.type === "subagent_parallel_trace"
+        ? (parsedContent.results as any[]) || []
+        : [parsedContent];
+
+    return (
+      <div className="mx-auto grid max-w-3xl gap-2.5">
+        {traces.map((tr: any, tIdx: number) => (
+          <div
+            key={tr.id || tIdx}
+            className="bg-card overflow-hidden rounded-xl border shadow-xs"
+          >
+            <div className="bg-muted/50 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="rounded bg-emerald-500/15 px-2 py-0.5 font-mono font-semibold uppercase text-emerald-700 dark:text-emerald-400">
+                  Sub-Agent · {tr.specialist_role || "specialist"}
+                </span>
+                <code className="text-muted-foreground text-[11px]">
+                  {tr.child_session_id}
+                </code>
+              </div>
+              <div className="text-muted-foreground flex items-center gap-2 font-mono text-[11px]">
+                <span>{tr.steps_count ?? 0} steps</span>
+                <span>·</span>
+                <span>{tr.duration_ms ?? 0}ms</span>
+                <span>·</span>
+                <span>
+                  {tr.child_context_tokens_isolated ?? 0}t isolated →{" "}
+                  {tr.parent_tokens_returned ?? 0}t distilled
+                </span>
+              </div>
+            </div>
+            <div className="space-y-2 p-4 text-sm">
+              <p className="whitespace-pre-wrap text-xs leading-relaxed">
+                {redactSensitiveText(String(tr.distilled_output || ""))}
+              </p>
+              {Array.isArray(tr.steps) && tr.steps.length > 0 && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setIsExpanded((v) => !v)}
+                    className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 font-mono text-[11px]"
+                  >
+                    {isExpanded ? (
+                      <>
+                        Hide Sub-Agent Execution Trace ({tr.steps.length})
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </>
+                    ) : (
+                      <>
+                        Inspect Sub-Agent Execution Trace ({tr.steps.length})
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </>
+                    )}
+                  </button>
+                  {isExpanded && (
+                    <pre className="bg-muted mt-2 max-h-56 overflow-auto rounded-lg p-3 font-mono text-[11px] whitespace-pre-wrap">
+                      {JSON.stringify(tr.steps, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const contentLines = contentStr.split("\n");
   const shouldTruncate = contentLines.length > 4 || contentStr.length > 500;
   const displayedContent =

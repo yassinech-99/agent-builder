@@ -49,6 +49,7 @@ from agent.skills import (
     build_tier2_active_skills_block,
     load_tenant_skills,
 )
+from agent.subagents import MAX_SUBAGENT_DEPTH, build_subagent_delegation_tools
 from api.core.tenancy import (
     TenantContext,
     build_meili_tenant_filter,
@@ -171,6 +172,8 @@ def _parse_agent_config(config: RunnableConfig) -> dict[str, Any]:
         "enabled_skill_ids": configurable.get("enabled_skill_ids"),
         "context_window": configurable.get("context_window"),
         "session_memory": configurable.get("session_memory", ""),
+        "enable_subagents": configurable.get("enable_subagents", True),
+        "subagent_depth": int(configurable.get("subagent_depth", 0) or 0),
     }
 
 
@@ -692,6 +695,30 @@ async def make_graph(config: RunnableConfig):
             prefix_hash=prefix_hash,
             thread_id=thread_id,
         )
+
+        # Phase 5: Bind Context-Isolated Specialist Sub-Agents (`delegate_to_subagent`)
+        sub_depth = int(agent_config.get("subagent_depth", 0) or 0)
+        if bool(agent_config.get("enable_subagents", True)) and sub_depth < MAX_SUBAGENT_DEPTH:
+            child_safe_tools = [
+                t
+                for t in all_executable_tools
+                if (
+                    spec_for_tool_name.get(t.name) is None
+                    or (
+                        not spec_for_tool_name[t.name].requires_approval
+                        and spec_for_tool_name[t.name].id not in approval_ids
+                    )
+                )
+            ]
+            sub_tools = build_subagent_delegation_tools(
+                model_getter=lambda: model,
+                child_tools=child_safe_tools,
+                parent_session_id=thread_id,
+                current_depth=sub_depth,
+                ctx=run_ctx,
+            )
+            base_tools.extend(sub_tools)
+            all_executable_tools.extend(sub_tools)
 
         async def _agent_node(state: NimAgentState) -> dict[str, Any]:
             discovered = state.get("discovered_tool_ids") or []

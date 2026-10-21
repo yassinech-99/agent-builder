@@ -37,6 +37,7 @@ from api.routes import (
     models,
     rag,
     scale,
+    sessions as sessions_router,
     skills as skills_router,
     storage,
     tools as tools_router,
@@ -140,6 +141,7 @@ app.include_router(scale.router)
 app.include_router(tools_router.router)
 app.include_router(skills_router.router)
 app.include_router(context_router.router)
+app.include_router(sessions_router.router)
 
 
 @app.get("/")
