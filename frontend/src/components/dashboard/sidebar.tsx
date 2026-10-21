@@ -15,6 +15,8 @@ import {
   HardDrive,
   Settings,
   Shield,
+  BarChart3,
+  FlaskConical,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -40,6 +42,8 @@ const NAV_ITEMS = [
   { href: "/storage", label: "Storage", icon: HardDrive },
   { href: "/voice", label: "Voice", icon: Mic },
   { href: "/security", label: "Security", icon: Shield },
+  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/evals", label: "Evals", icon: FlaskConical },
   { href: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -97,7 +101,7 @@ export function Sidebar() {
         </Button>
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1 p-2">
+      <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active =
             pathname === href || pathname.startsWith(href + "/");

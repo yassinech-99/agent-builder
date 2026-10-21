@@ -29,7 +29,9 @@ from api.db import init_db
 from api.db_async import close_async_engines
 from api.middleware.admission import AdmissionMiddleware
 from api.routes import (
+    analytics as analytics_router,
     context as context_router,
+    evals as evals_router,
     guardrails,
     lexical_rag,
     local_rag,
@@ -146,6 +148,8 @@ app.include_router(context_router.router)
 app.include_router(sessions_router.router)
 app.include_router(memories_router.router)
 app.include_router(rag_pipeline_router.router)
+app.include_router(analytics_router.router)
+app.include_router(evals_router.router)
 
 
 @app.get("/")

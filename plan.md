@@ -19,7 +19,7 @@
 8. [Phase 5 — Durable Session Architecture, Time-Travel Forking, Background Runs & Sub-Agents](#phase-5--durable-session-architecture-time-travel-forking-background-runs--sub-agents)
 9. [Phase 6 — 4-Tier Agent Memory System & Async ("Sleep-Time") Consolidation](#phase-6--4-tier-agent-memory-system--async-sleep-time-consolidation)
 10. [Phase 7 — Production Contextual, Hybrid & Agentic RAG Pipeline](#phase-7--production-contextual-hybrid--agentic-rag-pipeline)
-11. [Phase 8 — NVIDIA NemoGuard Safety, Open Streaming Voice (`Riva NIM`), FinOps & Evaluation Studio](#phase-8--nvidia-nemoguard-safety-open-streaming-voice-riva-nim-finops--evaluation-studio)
+11. [Phase 8 — NVIDIA NemoGuard Safety, Open Streaming Voice (`Riva NIM`), FinOps & Evaluation Studio ✅ COMPLETED](#phase-8--nvidia-nemoguard-safety-open-streaming-voice-riva-nim-finops--evaluation-studio--completed)
 12. [Capacity Planning, Scaling Playbook & Milestone Matrix](#12-capacity-planning-scaling-playbook--milestone-matrix)
 13. [Frontier Engineering & Systems References](#13-frontier-engineering--systems-references)
 
@@ -265,11 +265,11 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 
 ---
 
-## Phase 8 — NVIDIA NemoGuard Safety, Open Streaming Voice (`Riva NIM`), FinOps & Evaluation Studio
+## Phase 8 — NVIDIA NemoGuard Safety, Open Streaming Voice (`Riva NIM`), FinOps & Evaluation Studio *(✅ COMPLETED)*
 
-- **Deterministic Pre/Post Safety Pipeline (`/security`):** Mandatory input, tool-output (indirect prompt-injection shield!), and model-output hooks combining `<1ms` local PII/secret regex redactors + **NVIDIA NemoGuard NIMs** (`llama-3.1-nemotron-safety-guard-8b-v3`, `llama-3.1-nemoguard-8b-topic-control`, `nemoguard-jailbreak-detect`) with full `tenant_id` / `session_id` live audit logging.
-- **Scalable WebSocket Voice Gateway (`/voice` & Chat Voice Toggle):** WebAudio `AudioWorklet` 16kHz PCM streaming through stateless WebSocket gateway pods backed by **NVIDIA Riva Speech NIMs (`Parakeet ASR` + `Magpie TTS`)** (or local `Faster-Whisper` + `Kokoro` containers), backpressure-bounded ring buffers, instant barge-in cancellation, and shared LangGraph session state.
-- **FinOps Cost/Latency Observatory (`/analytics`) & Evaluation Studio (`/evals`):** Real-time `recharts` dashboards tracking per-tenant/per-agent TPM, KV-cache hit ratio, semantic cache savings, p50/p95/p99 TTFT, queue wait time, side-by-side NIM model A/B arena, and automated CI regression evals.
+- **Deterministic Pre/Post Safety Pipeline (`/security`):** Mandatory `input_guard`, `tool_output_guard` (indirect prompt-injection shield!), and `output_guard` LangGraph nodes (`agent/guardrails_engine.py`, `api/routes/guardrails.py`) combining `<1ms` pre-compiled PII/secret regex redactors + **NVIDIA NemoGuard NIMs** (`llama-3.1-nemotron-safety-guard-8b-v3`, `llama-3.1-nemoguard-8b-topic-control`, `nemoguard-jailbreak-detect`) with Base64/Unicode-tag de-obfuscation, sub-millisecond L1 verdict caching, and live `tenant_id` / `session_id` audit logging.
+- **Scalable WebSocket Voice Gateway (`/voice` & Chat Voice Toggle):** WebAudio `AudioWorklet` 16kHz `PCM_S16LE` streaming (`voice-session.tsx`, `api/routes/voice.py`) with 44-byte `RIFF/WAVE` framing through stateless WebSocket gateway pods backed by **NVIDIA Riva Speech NIMs (`Parakeet ASR` + `Magpie TTS`)** (or `Faster-Whisper` + `Kokoro`), `2 MiB` backpressure-bounded ring buffers, sub-5ms `barge_in` task cancellation, and shared multi-turn `thread_id` session state.
+- **FinOps Cost/Latency Observatory (`/analytics`) & Evaluation Studio (`/evals`):** Real-time `recharts` dashboards (`api/routes/analytics.py`, `app/(dashboard)/analytics/page.tsx`) tracking per-tenant/per-agent TPM, GPU KV-cache hit ratio, L1/L2 semantic cache `$` savings, `p50/p95/p99` TTFT & queue wait percentiles, paired with `api/routes/evals.py` & `app/(dashboard)/evals/page.tsx` for automated pre-merge CI regression gates and parallel side-by-side NIM Model A/B Arena battles.
 
 ---
 
@@ -294,7 +294,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 | **Phase 5** *(✅ DONE)* | **Durable Sessions, `Last-Event-ID` Stream Replay, Checkpoint Forking & Sub-Agents** | `api/services/run_manager.py`, `api/routes/sessions.py`, `agent/subagents.py`, `app/(dashboard)/sessions/page.tsx`, `ThreadHistory` | Pod kill mid-stream recovers cleanly via `wake(session_id)`; tab reload replays live stream; thread fork + sub-agent traces green (`36/36` pytest + `17/17` Next.js routes) |
 | **Phase 6** *(✅ DONE)* | **4-Tier Cognitive Memory + Bi-Temporal Facts + Sleep-Time Consolidator + `/memories`** | `agent/memory_engine.py`, `api/services/memory_consolidator.py`, `api/routes/memories.py`, `app/(dashboard)/memories/page.tsx` | `0ms` write latency on chat path; conflicting facts auto-supersede; `<35ms` hybrid memory recall (`41/41` pytest + `18/18` Next.js routes green) |
 | **Phase 7** *(✅ DONE)* | **Contextual + Parent-Child + `NVIDIAEmbeddings` Qdrant + BM25 + `NVIDIARerank` RAG** | `api/services/rag_pipeline.py`, `api/routes/rag_pipeline.py`, `app/(dashboard)/rag/page.tsx`, `messages/citations.tsx` | Streaming upload + `202` SSE + parent-child table preservation + batched `NVIDIARerank` + clickable `[1]` drawer (`45/45` pytest + `18/18` Next.js routes green) |
-| **Phase 8** | **`NemoGuard` Pre/Post Safety, `Riva NIM` Voice, FinOps `/analytics` & `/evals`** | `agent/guardrails_engine.py`, `api/routes/voice.py`, `app/(dashboard)/analytics/`, `app/(dashboard)/evals/` | Deterministic input/tool/output guardrails; real-time streaming voice; multi-tenant FinOps & CI eval suite |
+| **Phase 8** *(✅ DONE)* | **`NemoGuard` Pre/Post Safety, `Riva NIM` Voice, FinOps `/analytics` & `/evals`** | `agent/guardrails_engine.py`, `api/routes/{voice,analytics,evals}.py`, `app/(dashboard)/{security,analytics,evals}/page.tsx` | Mandatory 3-stage input/tool/output safety shields; 16kHz PCM voice + instant barge-in; FinOps `recharts` & CI eval arena (`51/51` pytest + `20/20` Next.js routes green) |
 
 ---
 

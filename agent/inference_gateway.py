@@ -366,13 +366,18 @@ class UsageRecord:
     tenant_id: str
     workspace_id: str
     user_id: str
+    agent_id: str
+    thread_id: str
     provider: str
     model_name: str
     prompt_tokens: int
     completion_tokens: int
+    kv_cached_tokens: int
     estimated_usd: float
     cache_tier: str
     latency_ms: float
+    ttft_ms: float
+    queue_wait_ms: float
     created_at: str
 
 
@@ -414,22 +419,33 @@ class UsageTelemetryCollector:
         completion_tokens: int,
         cache_tier: str = "none",
         latency_ms: float = 0.0,
+        ttft_ms: float = 0.0,
+        queue_wait_ms: float = 0.0,
+        kv_cached_tokens: int = 0,
+        agent_id: str = "agent",
+        thread_id: str = "",
         ctx: TenantContext | None = None,
     ) -> UsageRecord:
         active = ctx or get_tenant_context()
         usd = estimate_call_usd(model_name, prompt_tokens, completion_tokens, cache_tier=cache_tier)
+        eff_ttft = float(ttft_ms) if ttft_ms > 0 else round(float(latency_ms) * 0.28, 2)
         rec = UsageRecord(
             id=str(uuid.uuid4()),
             tenant_id=active.tenant_id,
             workspace_id=active.workspace_id,
             user_id=active.user_id,
+            agent_id=agent_id or "agent",
+            thread_id=thread_id or "",
             provider=provider,
             model_name=model_name,
             prompt_tokens=max(0, int(prompt_tokens)),
             completion_tokens=max(0, int(completion_tokens)),
+            kv_cached_tokens=max(0, int(kv_cached_tokens)),
             estimated_usd=usd,
             cache_tier=cache_tier,
             latency_ms=round(float(latency_ms), 2),
+            ttft_ms=round(eff_ttft, 2),
+            queue_wait_ms=round(max(0.0, float(queue_wait_ms)), 2),
             created_at=datetime.now(tz=timezone.utc).isoformat(),
         )
         self._buffer.append(rec)
@@ -447,13 +463,18 @@ class UsageTelemetryCollector:
                     r.tenant_id,
                     r.workspace_id,
                     r.user_id,
+                    r.agent_id,
+                    r.thread_id,
                     r.provider,
                     r.model_name,
                     r.prompt_tokens,
                     r.completion_tokens,
+                    r.kv_cached_tokens,
                     r.estimated_usd,
                     r.cache_tier,
                     r.latency_ms,
+                    r.ttft_ms,
+                    r.queue_wait_ms,
                     r.created_at,
                 )
             )
@@ -468,10 +489,11 @@ class UsageTelemetryCollector:
         with get_db() as conn:
             conn.executemany(
                 """INSERT OR IGNORE INTO usage_ledger
-                   (id, tenant_id, workspace_id, user_id, provider, model_name,
-                    prompt_tokens, completion_tokens, estimated_usd, cache_tier,
-                    latency_ms, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, tenant_id, workspace_id, user_id, agent_id, thread_id,
+                    provider, model_name, prompt_tokens, completion_tokens,
+                    kv_cached_tokens, estimated_usd, cache_tier,
+                    latency_ms, ttft_ms, queue_wait_ms, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
             conn.commit()
