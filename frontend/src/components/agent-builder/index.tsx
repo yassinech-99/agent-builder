@@ -57,6 +57,10 @@ export function AgentBuilder({ editId }: { editId?: string } = {}) {
         tool_loading_mode: config.tool_loading_mode ?? "auto",
         enable_programmatic_tools: config.enable_programmatic_tools ?? true,
         approval_required_tools: config.approval_required_tools ?? [],
+        ...(config.enabled_skill_ids && config.enabled_skill_ids.length > 0
+          ? { enabled_skill_ids: config.enabled_skill_ids }
+          : {}),
+        session_memory: config.session_memory ?? "",
       };
 
       if (editId) {

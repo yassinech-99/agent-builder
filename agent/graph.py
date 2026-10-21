@@ -3,6 +3,9 @@
   - Provider-agnostic KV-Cache-Safe Deferred Tool Loading (`tool_loading_mode = 'auto' | 'deferred' | 'eager'`)
     using dynamic `discovered_tool_ids` state updates (`Command`) via sub-5ms Hybrid BM25 + Cosine `tool_search`
   - Zero-Trust Sandbox Hands Programmatic Tool Calling (`orchestrate_tools`) over Unix socket RPC
+  - Phase 4 3-Tier Progressive `SKILL.md` Skills (`activate_skill`, `read_skill_resource`)
+  - Phase 4 5-Stage Graduated Context Engine (`read_artifact`, `<think>` stripping, batch tool clearing,
+    pre-compact fact extraction, rolling `<compaction_checkpoint>`, and 95% hard ceiling guard)
 """
 
 from __future__ import annotations
@@ -17,24 +20,35 @@ import re
 import time
 from typing import Annotated, Any
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool, tool
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import Command
-from pydantic import BaseModel, Field
 
+from agent.context_engine import (
+    ContextPolicy,
+    build_read_artifact_tool,
+    context_engine,
+)
 from agent.inference_gateway import compute_prefix_hash
 from agent.model import get_model, sanitize_multimodal_messages
 from agent.registry import (
     PINNED_CORE_TOOL_IDS,
     ToolSpec,
     build_deferred_directory_prompt,
+    count_text_tokens,
     tool_registry,
 )
 from agent.sandbox_hands import build_orchestrate_tools_tool
+from agent.skills import (
+    build_skill_runtime_tools,
+    build_tier1_skill_directory_prompt,
+    build_tier2_active_skills_block,
+    load_tenant_skills,
+)
 from api.core.tenancy import (
     TenantContext,
     build_meili_tenant_filter,
@@ -42,7 +56,7 @@ from api.core.tenancy import (
     sanitize_tenant_identifier,
     tenant_scope,
 )
-from api.db import ensure_tenant_guardrails_seeded
+from api.db import ensure_tenant_guardrails_seeded, get_db
 
 logger = logging.getLogger("nimagents.graph")
 
@@ -73,20 +87,41 @@ def _merge_ordered_unique_ids(left: list[str] | None, right: list[str] | None) -
 
 
 class NimAgentState(MessagesState):
-    """Multi-turn state extending `MessagesState` with append-only `discovered_tool_ids`."""
+    """Multi-turn state extending `MessagesState` with KV-stable discovery, skills, and compaction."""
 
     discovered_tool_ids: Annotated[list[str], _merge_ordered_unique_ids]
+    activated_skill_ids: Annotated[list[str], _merge_ordered_unique_ids]
+    compaction_checkpoint: str
 
 
 def _build_system_prompt(raw: str | None, agent_name: str = "nimAgents Assistant") -> str:
+    """Build byte-stable Block 1 system prompt (never injecting per-second clock jitter into Block 1!)."""
     template = raw or DEFAULT_SYSTEM_PROMPT
     try:
         kwargs: dict[str, str] = {"agent_name": agent_name}
         if "{system_time}" in template:
-            kwargs["system_time"] = datetime.now(tz=UTC).isoformat()
+            # Keep Block 1 100% deterministic across turns & users so GPU KV caches stay warm!
+            kwargs["system_time"] = datetime.now(tz=UTC).strftime("%Y-%m-%d")
         return template.format(**kwargs)
     except (KeyError, IndexError, ValueError):
         return template
+
+
+def _resolve_model_context_window(model_id: str | None, ctx: TenantContext, override: int | None = None) -> int:
+    if override and override >= 1024:
+        return int(override)
+    if model_id:
+        try:
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT context_window FROM models WHERE id = ? AND tenant_id = ?",
+                    (model_id, ctx.tenant_id),
+                ).fetchone()
+            if row and row["context_window"]:
+                return max(2048, int(row["context_window"]))
+        except Exception:
+            pass
+    return 131072
 
 
 def _pre_model_sanitize(state: dict[str, Any]) -> dict[str, Any]:
@@ -133,6 +168,9 @@ def _parse_agent_config(config: RunnableConfig) -> dict[str, Any]:
         "tool_loading_mode": configurable.get("tool_loading_mode", "auto"),
         "enable_programmatic_tools": configurable.get("enable_programmatic_tools", True),
         "approval_required_tools": configurable.get("approval_required_tools", []),
+        "enabled_skill_ids": configurable.get("enabled_skill_ids"),
+        "context_window": configurable.get("context_window"),
+        "session_memory": configurable.get("session_memory", ""),
     }
 
 
@@ -194,7 +232,6 @@ def _build_rag_tool(rag_source_ids: list[str], ctx: TenantContext):
     async def rag_search(query: str) -> str:
         """Search external NVIDIA NIM RAG knowledge collections for relevant documents."""
         try:
-            from api.db import get_db
             from api.routes.rag import query_nim_rag_row
 
             rows_to_query: list[dict[str, Any]] = []
@@ -232,7 +269,6 @@ def _build_local_rag_tool(local_rag_source_ids: list[str], ctx: TenantContext):
     async def local_rag_search(query: str) -> str:
         """Search tenant-isolated Qdrant vector documents using batched embeddings and NVIDIA reranking."""
         try:
-            from api.db import get_db
             from api.routes.local_rag import search_local_source_async
 
             rows_to_query: list[dict[str, Any]] = []
@@ -271,7 +307,6 @@ def _build_lexical_rag_tool(lexical_rag_source_ids: list[str], ctx: TenantContex
         """Search uploaded tenant documents using Meilisearch BM25 lexical matching."""
         try:
             import meilisearch
-            from api.db import get_db
 
             client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
             rows_to_query: list[dict[str, Any]] = []
@@ -354,8 +389,6 @@ def _check_guardrails(
 
     active = ctx or get_tenant_context()
     try:
-        from api.db import get_db
-
         with get_db() as conn:
             ensure_tenant_guardrails_seeded(conn, active.tenant_id)
             rules = conn.execute(
@@ -392,7 +425,6 @@ def _check_guardrails(
         try:
             from datetime import datetime as _dt, timezone as _tz
             import uuid as _uuid
-            from api.db import get_db
 
             now = _dt.now(_tz.utc).isoformat()
             with get_db() as conn:
@@ -493,6 +525,7 @@ async def make_graph(config: RunnableConfig):
         plan_tier=run_ctx.plan_tier,
     ):
         agent_config = _parse_agent_config(config)
+        agent_name = agent_config.get("agent_name", "nimAgents Assistant")
 
         enabled_ids: list[str] = list(agent_config.get("enabled_prebuilt_tools") or [])
         tool_configs: dict[str, dict[str, str]] = agent_config.get("tool_configs") or {}
@@ -556,6 +589,7 @@ async def make_graph(config: RunnableConfig):
             for inst in insts:
                 spec_for_tool_name[inst.name] = spec_by_id[pid]
             pinned_tools.extend(insts)
+
         mcp_tools = await _load_mcp_tools(agent_config.get("mcp_servers", []))
         base_tools: list[BaseTool] = pinned_tools + mcp_tools
 
@@ -589,6 +623,22 @@ async def make_graph(config: RunnableConfig):
 
         base_tools.append(check_guardrails)
 
+        # Phase 4: JIT Artifact Reader (`read_artifact`) + 3-Tier Progressive `SKILL.md` Tools
+        artifact_tool = build_read_artifact_tool(run_ctx)
+        base_tools.append(artifact_tool)
+
+        explicit_skill_ids = agent_config.get("enabled_skill_ids")
+        allowed_skill_filter = set(explicit_skill_ids) if explicit_skill_ids is not None else None
+        tenant_skills = load_tenant_skills(
+            run_ctx,
+            only_enabled=True,
+            allowed_skill_ids_or_slugs=allowed_skill_filter,
+        )
+        skills_by_slug = {s["slug"]: s for s in tenant_skills}
+        if tenant_skills:
+            skill_tools = build_skill_runtime_tools(tenant_skills)
+            base_tools.extend(skill_tools)
+
         # Build complete executable registry map for ToolNode AND Zero-Trust Sandbox Hands RPC!
         all_executable_tools: list[BaseTool] = list(base_tools)
         for tool_list in deferred_tools_by_id.values():
@@ -606,7 +656,7 @@ async def make_graph(config: RunnableConfig):
                         and t.name not in approval_ids
                     ):
                         sandbox_allowed[t.name] = t
-                elif t.name in ("rag_search", "local_rag_search", "lexical_rag_search"):
+                elif t.name in ("rag_search", "local_rag_search", "lexical_rag_search", "read_artifact"):
                     sandbox_allowed[t.name] = t
             if sandbox_allowed:
                 orch_tool = build_orchestrate_tools_tool(sandbox_allowed, ctx=run_ctx)
@@ -618,12 +668,22 @@ async def make_graph(config: RunnableConfig):
             base_tools.append(search_tool)
             all_executable_tools.append(search_tool)
 
+        # ── Block 1 Static Prefix (100% deterministic across ALL users & turns!) ──
         base_prompt = _build_system_prompt(
             agent_config.get("system_prompt"),
-            agent_config.get("agent_name", "nimAgents Assistant"),
+            agent_name,
         )
+        skill_dir_suffix = build_tier1_skill_directory_prompt(tenant_skills)
         directory_suffix = build_deferred_directory_prompt(deferred_specs)
-        system_prompt = f"{base_prompt}{directory_suffix}"
+        system_prompt = f"{base_prompt}{skill_dir_suffix}{directory_suffix}"
+
+        ctx_window = _resolve_model_context_window(
+            agent_config.get("model_id"),
+            run_ctx,
+            override=agent_config.get("context_window"),
+        )
+        context_policy = ContextPolicy(context_window=ctx_window)
+        session_memory_str = str(agent_config.get("session_memory") or "")
 
         prefix_hash = compute_prefix_hash(system_prompt)
         model = get_model(
@@ -635,9 +695,11 @@ async def make_graph(config: RunnableConfig):
 
         async def _agent_node(state: NimAgentState) -> dict[str, Any]:
             discovered = state.get("discovered_tool_ids") or []
+            activated_skills = state.get("activated_skill_ids") or []
+            prior_checkpoint = state.get("compaction_checkpoint") or ""
+
             active_turn_tools: list[BaseTool] = list(base_tools)
             seen_names = {t.name for t in active_turn_tools}
-            # Bind discovered tools in exact deterministic append-only discovery order!
             for did in discovered:
                 for dt in deferred_tools_by_id.get(did, []):
                     if dt.name not in seen_names:
@@ -646,9 +708,33 @@ async def make_graph(config: RunnableConfig):
 
             bound_llm = model.bind_tools(active_turn_tools)
             clean_history = sanitize_multimodal_messages(state.get("messages", []))
-            full_messages = [SystemMessage(content=system_prompt), *clean_history]
-            response = await bound_llm.ainvoke(full_messages)
-            return {"messages": [response]}
+
+            active_skills_md = build_tier2_active_skills_block(skills_by_slug, activated_skills)
+            bound_schema_toks = sum(
+                count_text_tokens(f"{t.name}:{getattr(t, 'description', '')}") + 32
+                for t in active_turn_tools
+            )
+
+            projection = await context_engine.shape_context(
+                static_system_prompt=system_prompt,
+                session_memory_notes=session_memory_str,
+                active_skills_block=active_skills_md,
+                prior_compaction_checkpoint=prior_checkpoint,
+                messages=clean_history,
+                tool_schema_tokens=bound_schema_toks,
+                policy=context_policy,
+                ctx=run_ctx,
+                thread_id=thread_id,
+                agent_name=agent_name,
+                deferred_tools_count=max(0, len(deferred_specs) - len(discovered)),
+                active_skill_slugs=list(activated_skills),
+            )
+
+            response = await bound_llm.ainvoke(projection.to_model_messages())
+            state_update: dict[str, Any] = {"messages": [response]}
+            if projection.compacted_this_turn and projection.updated_checkpoint:
+                state_update["compaction_checkpoint"] = projection.updated_checkpoint
+            return state_update
 
         builder = StateGraph(NimAgentState)
         builder.add_node("agent", _agent_node)

@@ -48,6 +48,7 @@ import {
 } from "./artifact";
 import { detectRiskyInput } from "@/lib/guardrails";
 import { getBuilderApiUrl, NIMAGENTS_STORAGE } from "@/lib/runtime-urls";
+import { ContextMeter } from "./context-meter";
 
 type KnowledgeSource = {
   id: string;
@@ -722,7 +723,8 @@ export function Thread() {
                 </motion.button>
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
+                <ContextMeter threadId={threadId} messages={messages} />
                 <TooltipIconButton
                   size="lg"
                   className="p-4"

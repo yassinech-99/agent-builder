@@ -136,10 +136,12 @@ _TOKEN_ENCODER = None
 
 
 def count_text_tokens(text: str) -> int:
-    """Count exact BPE tokens using `tiktoken` (`cl100k_base`) with fast UTF-8 fallback."""
+    """Count exact BPE tokens using `tiktoken` (`cl100k_base`) with cached zero-latency offline fallback."""
     global _TOKEN_ENCODER
     if not text:
         return 0
+    if _TOKEN_ENCODER is False:
+        return max(1, len(text) // 4)
     try:
         if _TOKEN_ENCODER is None:
             import tiktoken
@@ -147,6 +149,7 @@ def count_text_tokens(text: str) -> int:
             _TOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
         return len(_TOKEN_ENCODER.encode(text))
     except Exception:
+        _TOKEN_ENCODER = False
         return max(1, len(text) // 4)
 
 
