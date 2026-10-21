@@ -37,6 +37,7 @@ from api.routes import (
     rag,
     scale,
     storage,
+    tools as tools_router,
     voice,
 )
 from api.workers.priority_queue import work_pool
@@ -134,12 +135,7 @@ app.include_router(voice.router)
 app.include_router(storage.router)
 app.include_router(guardrails.router)
 app.include_router(scale.router)
-
-
-@app.get("/api/tools/catalog")
-async def list_prebuilt_tools():
-    """Return the full prebuilt-tool catalog with required config metadata."""
-    return get_catalog_info()
+app.include_router(tools_router.router)
 
 
 @app.get("/")

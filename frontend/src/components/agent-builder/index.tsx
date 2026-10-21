@@ -54,6 +54,9 @@ export function AgentBuilder({ editId }: { editId?: string } = {}) {
         local_rag_source_ids: config.local_rag_source_ids,
         lexical_rag_source_ids: config.lexical_rag_source_ids,
         voice_enabled: config.voice_enabled,
+        tool_loading_mode: config.tool_loading_mode ?? "auto",
+        enable_programmatic_tools: config.enable_programmatic_tools ?? true,
+        approval_required_tools: config.approval_required_tools ?? [],
       };
 
       if (editId) {

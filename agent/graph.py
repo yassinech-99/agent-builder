@@ -1,15 +1,8 @@
-"""LangGraph graph factory that builds a multi-tenant nimAgents ReAct agent from per-run config.
-
-Config schema (passed via config["configurable"]):
-    agent_name:              str
-    system_prompt:           str
-    enabled_prebuilt_tools:  list[str]
-    tool_configs:            dict[str, dict[str, str]]  (per-tool secrets/params)
-    mcp_servers:             list[dict]
-    model_id:                str            (optional, falls back to DB default / .env)
-    rag_source_ids:          list[str]      (optional, adds NVIDIA NIM RAG retriever tool)
-    local_rag_source_ids:    list[str]      (optional, adds Qdrant vector RAG search tool)
-    lexical_rag_source_ids:  list[str]      (optional, adds Meilisearch BM25 search tool)
+"""LangGraph graph factory that builds a multi-tenant nimAgents ReAct agent with:
+  - Unified `ToolRegistry` (`ToolSpec`, concrete `input_examples`, timeouts, circuit breakers & HITL)
+  - Provider-agnostic KV-Cache-Safe Deferred Tool Loading (`tool_loading_mode = 'auto' | 'deferred' | 'eager'`)
+    using dynamic `discovered_tool_ids` state updates (`Command`) via sub-5ms Hybrid BM25 + Cosine `tool_search`
+  - Zero-Trust Sandbox Hands Programmatic Tool Calling (`orchestrate_tools`) over Unix socket RPC
 """
 
 from __future__ import annotations
@@ -20,17 +13,28 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
-from typing import Any
+from typing import Annotated, Any
 
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import Command
+from pydantic import BaseModel, Field
 
 from agent.inference_gateway import compute_prefix_hash
 from agent.model import get_model, sanitize_multimodal_messages
-from agent.tools import get_tools_by_ids
+from agent.registry import (
+    PINNED_CORE_TOOL_IDS,
+    ToolSpec,
+    build_deferred_directory_prompt,
+    tool_registry,
+)
+from agent.sandbox_hands import build_orchestrate_tools_tool
 from api.core.tenancy import (
     TenantContext,
     build_meili_tenant_filter,
@@ -49,11 +53,29 @@ MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY") or None
 _MCP_TOOL_CACHE: dict[str, tuple[float, list[Any]]] = {}
 _MCP_CACHE_TTL_S = 60.0
 
+AUTO_DEFER_TOKEN_THRESHOLD = 1200
+AUTO_DEFER_TOOL_COUNT_THRESHOLD = 6
+
 # Byte-stable system prompt prefix to preserve GPU KV cache reuse across turns & users.
 DEFAULT_SYSTEM_PROMPT = (
     "You are {agent_name}, a helpful and accurate AI assistant powered by nimAgents. "
     "Use the available tools thoughtfully when needed and cite retrieved knowledge clearly."
 )
+
+
+def _merge_ordered_unique_ids(left: list[str] | None, right: list[str] | None) -> list[str]:
+    """Append-only reducer preserving deterministic creation order for GPU KV cache stability!"""
+    seen: list[str] = list(left or [])
+    for item in right or []:
+        if item and item not in seen:
+            seen.append(item)
+    return seen
+
+
+class NimAgentState(MessagesState):
+    """Multi-turn state extending `MessagesState` with append-only `discovered_tool_ids`."""
+
+    discovered_tool_ids: Annotated[list[str], _merge_ordered_unique_ids]
 
 
 def _build_system_prompt(raw: str | None, agent_name: str = "nimAgents Assistant") -> str:
@@ -108,10 +130,13 @@ def _parse_agent_config(config: RunnableConfig) -> dict[str, Any]:
         "rag_source_ids": configurable.get("rag_source_ids", []),
         "local_rag_source_ids": configurable.get("local_rag_source_ids", []),
         "lexical_rag_source_ids": configurable.get("lexical_rag_source_ids", []),
+        "tool_loading_mode": configurable.get("tool_loading_mode", "auto"),
+        "enable_programmatic_tools": configurable.get("enable_programmatic_tools", True),
+        "approval_required_tools": configurable.get("approval_required_tools", []),
     }
 
 
-async def _load_mcp_tools(mcp_servers: list[dict[str, Any]]) -> list:
+async def _load_mcp_tools(mcp_servers: list[dict[str, Any]]) -> list[BaseTool]:
     if not mcp_servers:
         return []
 
@@ -283,7 +308,7 @@ def _build_lexical_rag_tool(lexical_rag_source_ids: list[str], ctx: TenantContex
 
 async def _load_meilisearch_mcp_tools(
     tool_configs: dict[str, dict[str, str]],
-) -> list:
+) -> list[BaseTool]:
     """Load meilisearch-mcp tools with 60s pooled tool-list caching instead of per-turn spawns."""
     meili_cfg = tool_configs.get("meilisearch_mcp", {})
     meili_addr = meili_cfg.get("MEILI_HTTP_ADDR") or MEILI_URL
@@ -399,6 +424,63 @@ def _check_guardrails(
     return {"passed": not has_block, "hits": hits, "cleaned_text": cleaned}
 
 
+def _build_dynamic_tool_search_tool(
+    deferred_specs: list[ToolSpec],
+    ctx: TenantContext,
+) -> BaseTool:
+    """Create the `tool_search` LangGraph tool updating `discovered_tool_ids` via `Command`."""
+
+    @tool
+    def tool_search(
+        query: str,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        mode: str = "hybrid",
+        limit: int = 5,
+    ) -> Command:
+        """Discover and activate specialized deferred tools on demand (`mode`: 'hybrid', 'regex', or 'select').
+        Activated tools immediately become directly callable on your very next step!"""
+        try:
+            hits = tool_registry.search_tools(
+                query,
+                mode=mode,
+                limit=limit,
+                candidates=deferred_specs,
+                ctx=ctx,
+            )
+        except (ValueError, re.error) as exc:
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=f"Invalid tool_search query: {exc}",
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                }
+            )
+
+        activated_ids = [h["id"] for h in hits]
+        lines = [
+            f"Activated {len(hits)} tool(s) for immediate use ({mode} search):"
+        ]
+        for h in hits:
+            lines.append(f"- `{h['name']}` (`{h['namespaced_id']}`): {h['description']}")
+
+        return Command(
+            update={
+                "discovered_tool_ids": activated_ids,
+                "messages": [
+                    ToolMessage(
+                        content="\n".join(lines),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+            }
+        )
+
+    return tool_search
+
+
 async def make_graph(config: RunnableConfig):
     run_ctx = _extract_run_tenant(config)
     configurable = config.get("configurable", {})
@@ -412,47 +494,86 @@ async def make_graph(config: RunnableConfig):
     ):
         agent_config = _parse_agent_config(config)
 
-        enabled_tools = agent_config.get("enabled_prebuilt_tools", [])
-        tool_configs = agent_config.get("tool_configs", {})
+        enabled_ids: list[str] = list(agent_config.get("enabled_prebuilt_tools") or [])
+        tool_configs: dict[str, dict[str, str]] = agent_config.get("tool_configs") or {}
+        approval_ids = set(agent_config.get("approval_required_tools") or [])
+        loading_mode = str(agent_config.get("tool_loading_mode") or "auto").lower()
+        enable_programmatic = bool(agent_config.get("enable_programmatic_tools", True))
 
-        has_meili_mcp = "meilisearch_mcp" in enabled_tools
-        regular_tool_ids = [t for t in enabled_tools if t != "meilisearch_mcp"]
+        has_meili_mcp = "meilisearch_mcp" in enabled_ids
+        regular_tool_ids = [t for t in enabled_ids if t != "meilisearch_mcp"]
+        if not regular_tool_ids and not agent_config.get("mcp_servers"):
+            regular_tool_ids = ["calculator", "current_datetime"]
 
-        prebuilt_tools = get_tools_by_ids(regular_tool_ids, tool_configs=tool_configs)
+        all_candidate_specs = tool_registry.list_specs(
+            ctx=run_ctx, only_ids=set(regular_tool_ids)
+        )
+        total_schema_tokens = sum(s.token_cost for s in all_candidate_specs)
+
+        use_deferred = (
+            loading_mode == "deferred"
+            or (
+                loading_mode == "auto"
+                and (
+                    total_schema_tokens > AUTO_DEFER_TOKEN_THRESHOLD
+                    or len(all_candidate_specs) > AUTO_DEFER_TOOL_COUNT_THRESHOLD
+                )
+            )
+        )
+
+        pinned_ids: list[str] = []
+        deferred_specs: list[ToolSpec] = []
+        deferred_tools_by_id: dict[str, list[BaseTool]] = {}
+        spec_for_tool_name: dict[str, ToolSpec] = {}
+        spec_by_id = {s.id: s for s in all_candidate_specs}
+
+        if use_deferred:
+            for spec in all_candidate_specs:
+                if not spec.defer_loading or spec.id in PINNED_CORE_TOOL_IDS:
+                    pinned_ids.append(spec.id)
+                else:
+                    deferred_specs.append(spec)
+                    insts = tool_registry.instantiate_tools(
+                        [spec.id],
+                        tool_configs=tool_configs,
+                        approval_required_ids=approval_ids,
+                        ctx=run_ctx,
+                    )
+                    for inst in insts:
+                        spec_for_tool_name[inst.name] = spec
+                    deferred_tools_by_id[spec.id] = insts
+        else:
+            pinned_ids = [s.id for s in all_candidate_specs]
+
+        pinned_tools: list[BaseTool] = []
+        for pid in pinned_ids:
+            insts = tool_registry.instantiate_tools(
+                [pid],
+                tool_configs=tool_configs,
+                approval_required_ids=approval_ids,
+                ctx=run_ctx,
+            )
+            for inst in insts:
+                spec_for_tool_name[inst.name] = spec_by_id[pid]
+            pinned_tools.extend(insts)
         mcp_tools = await _load_mcp_tools(agent_config.get("mcp_servers", []))
-
-        tools = prebuilt_tools + mcp_tools
+        base_tools: list[BaseTool] = pinned_tools + mcp_tools
 
         rag_ids = agent_config.get("rag_source_ids", [])
         if rag_ids:
-            tools.append(_build_rag_tool(rag_ids, run_ctx))
+            base_tools.append(_build_rag_tool(rag_ids, run_ctx))
 
         local_rag_ids = agent_config.get("local_rag_source_ids", [])
         if local_rag_ids:
-            tools.append(_build_local_rag_tool(local_rag_ids, run_ctx))
+            base_tools.append(_build_local_rag_tool(local_rag_ids, run_ctx))
 
         lexical_ids = agent_config.get("lexical_rag_source_ids", [])
         if lexical_ids:
-            tools.append(_build_lexical_rag_tool(lexical_ids, run_ctx))
+            base_tools.append(_build_lexical_rag_tool(lexical_ids, run_ctx))
 
         if has_meili_mcp:
             meili_mcp_tools = await _load_meilisearch_mcp_tools(tool_configs)
-            tools.extend(meili_mcp_tools)
-
-        if not tools:
-            tools = get_tools_by_ids(["calculator", "current_datetime"])
-
-        system_prompt = _build_system_prompt(
-            agent_config.get("system_prompt"),
-            agent_config.get("agent_name", "nimAgents Assistant"),
-        )
-        prefix_hash = compute_prefix_hash(system_prompt)
-        model = get_model(
-            agent_config.get("model_id") or None,
-            priority=1,
-            prefix_hash=prefix_hash,
-            thread_id=thread_id,
-        )
+            base_tools.extend(meili_mcp_tools)
 
         @tool
         def check_guardrails(text: str) -> str:
@@ -466,11 +587,73 @@ async def make_graph(config: RunnableConfig):
                 return f"Guardrail warnings: {', '.join(warnings)}. Content was sanitized."
             return "ok"
 
-        tools.append(check_guardrails)
+        base_tools.append(check_guardrails)
 
-        return create_react_agent(
-            model,
-            tools,
-            prompt=system_prompt,
-            pre_model_hook=_pre_model_sanitize,
+        # Build complete executable registry map for ToolNode AND Zero-Trust Sandbox Hands RPC!
+        all_executable_tools: list[BaseTool] = list(base_tools)
+        for tool_list in deferred_tools_by_id.values():
+            all_executable_tools.extend(tool_list)
+
+        if enable_programmatic:
+            sandbox_allowed: dict[str, BaseTool] = {}
+            for t in all_executable_tools:
+                sp = spec_for_tool_name.get(t.name)
+                if sp is not None:
+                    if (
+                        "code_execution" in sp.allowed_callers
+                        and not sp.requires_approval
+                        and sp.id not in approval_ids
+                        and t.name not in approval_ids
+                    ):
+                        sandbox_allowed[t.name] = t
+                elif t.name in ("rag_search", "local_rag_search", "lexical_rag_search"):
+                    sandbox_allowed[t.name] = t
+            if sandbox_allowed:
+                orch_tool = build_orchestrate_tools_tool(sandbox_allowed, ctx=run_ctx)
+                base_tools.append(orch_tool)
+                all_executable_tools.append(orch_tool)
+
+        if deferred_specs:
+            search_tool = _build_dynamic_tool_search_tool(deferred_specs, run_ctx)
+            base_tools.append(search_tool)
+            all_executable_tools.append(search_tool)
+
+        base_prompt = _build_system_prompt(
+            agent_config.get("system_prompt"),
+            agent_config.get("agent_name", "nimAgents Assistant"),
         )
+        directory_suffix = build_deferred_directory_prompt(deferred_specs)
+        system_prompt = f"{base_prompt}{directory_suffix}"
+
+        prefix_hash = compute_prefix_hash(system_prompt)
+        model = get_model(
+            agent_config.get("model_id") or None,
+            priority=1,
+            prefix_hash=prefix_hash,
+            thread_id=thread_id,
+        )
+
+        async def _agent_node(state: NimAgentState) -> dict[str, Any]:
+            discovered = state.get("discovered_tool_ids") or []
+            active_turn_tools: list[BaseTool] = list(base_tools)
+            seen_names = {t.name for t in active_turn_tools}
+            # Bind discovered tools in exact deterministic append-only discovery order!
+            for did in discovered:
+                for dt in deferred_tools_by_id.get(did, []):
+                    if dt.name not in seen_names:
+                        active_turn_tools.append(dt)
+                        seen_names.add(dt.name)
+
+            bound_llm = model.bind_tools(active_turn_tools)
+            clean_history = sanitize_multimodal_messages(state.get("messages", []))
+            full_messages = [SystemMessage(content=system_prompt), *clean_history]
+            response = await bound_llm.ainvoke(full_messages)
+            return {"messages": [response]}
+
+        builder = StateGraph(NimAgentState)
+        builder.add_node("agent", _agent_node)
+        builder.add_node("tools", ToolNode(all_executable_tools))
+        builder.add_edge(START, "agent")
+        builder.add_conditional_edges("agent", tools_condition)
+        builder.add_edge("tools", "agent")
+        return builder.compile()

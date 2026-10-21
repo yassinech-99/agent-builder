@@ -139,6 +139,28 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS custom_tools (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    namespaced_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'openapi',
+    method TEXT NOT NULL DEFAULT 'GET',
+    url_template TEXT NOT NULL,
+    headers_json TEXT NOT NULL DEFAULT '{}',
+    input_schema_json TEXT NOT NULL DEFAULT '{}',
+    input_examples_json TEXT NOT NULL DEFAULT '[]',
+    defer_loading BOOLEAN DEFAULT TRUE,
+    requires_approval BOOLEAN DEFAULT FALSE,
+    side_effect_level TEXT NOT NULL DEFAULT 'read',
+    timeout_seconds DOUBLE PRECISION DEFAULT 20.0,
+    max_output_tokens INTEGER DEFAULT 2000,
+    source_spec_title TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable & FORCE Row-Level Security across every multi-tenant table
 DO $$
 DECLARE
@@ -153,7 +175,8 @@ BEGIN
         'guardrail_rules',
         'guardrail_events',
         'background_jobs',
-        'usage_ledger'
+        'usage_ledger',
+        'custom_tools'
     ]
     LOOP
         EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%I_tenant_ws ON %I (tenant_id, workspace_id)', tbl, tbl);
