@@ -1,16 +1,17 @@
-"""Multi-provider NVIDIA NIM model registry, live endpoint discovery, and health-check endpoints."""
+"""Multi-tenant NVIDIA NIM & multi-provider model registry, endpoint discovery, and health-check API."""
 
 from __future__ import annotations
 
 import logging
 import time
-import uuid
 from typing import Any
+import uuid
 
-import httpx
 from fastapi import APIRouter, HTTPException
+import httpx
 from pydantic import BaseModel, Field
 
+from agent.inference_gateway import prefix_router
 from agent.model import (
     DEFAULT_NIM_MODEL,
     MODEL_ROLES,
@@ -19,6 +20,7 @@ from agent.model import (
     create_model_from_config,
     resolve_provider_credentials,
 )
+from api.core.tenancy import get_tenant_context
 from api.db import get_db, mask_secret
 
 logger = logging.getLogger("nimagents.api.models")
@@ -43,6 +45,8 @@ class ModelCreate(BaseModel):
 
 class ModelOut(BaseModel):
     id: str
+    tenant_id: str = "default"
+    workspace_id: str = "default"
     name: str
     provider: str
     base_url: str
@@ -114,10 +118,11 @@ async def discover_models(body: DiscoverModelsRequest):
     api_key, base_url = resolve_provider_credentials(
         provider, api_key=body.api_key, base_url=body.base_url
     )
-    if not base_url:
+    primary_url = prefix_router.select_endpoint(base_url) or base_url
+    if not primary_url:
         raise HTTPException(status_code=400, detail="Base URL is required for model discovery")
 
-    target_url = base_url.rstrip("/")
+    target_url = primary_url.rstrip("/")
     if provider == "anthropic":
         target_url = f"{target_url}/v1/models" if not target_url.endswith("/v1") else f"{target_url}/models"
         headers = {
@@ -175,9 +180,13 @@ async def test_unsaved_model(body: ModelTestRequest):
 
 @router.post("/{model_id}/test")
 async def test_saved_model(model_id: str):
-    """Run a fast connectivity and latency ping against a saved model record."""
+    """Run a fast connectivity and latency ping against a saved tenant-scoped model record."""
+    ctx = get_tenant_context()
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM models WHERE id = ? AND tenant_id = ? AND workspace_id = ?",
+            (model_id, ctx.tenant_id, ctx.workspace_id),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
     return await _execute_model_ping(dict(row))
@@ -212,9 +221,13 @@ async def _execute_model_ping(cfg: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("", response_model=list[ModelOut])
 def list_models():
+    ctx = get_tenant_context()
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM models ORDER BY is_default DESC, created_at DESC"
+            """SELECT * FROM models
+               WHERE tenant_id = ? AND workspace_id = ?
+               ORDER BY is_default DESC, created_at DESC""",
+            (ctx.tenant_id, ctx.workspace_id),
         ).fetchall()
     return [_serialize_model_row(r) for r in rows]
 
@@ -232,19 +245,25 @@ def create_model(body: ModelCreate):
             detail=f"Invalid model role '{body.role}'. Valid roles: {', '.join(MODEL_ROLES)}",
         )
 
+    ctx = get_tenant_context()
     model_id = str(uuid.uuid4())
     with get_db() as conn:
         if body.is_default:
-            conn.execute("UPDATE models SET is_default = 0 WHERE is_default = 1")
+            conn.execute(
+                "UPDATE models SET is_default = 0 WHERE tenant_id = ? AND workspace_id = ? AND is_default = 1",
+                (ctx.tenant_id, ctx.workspace_id),
+            )
         conn.execute(
             """INSERT INTO models (
-                   id, name, provider, base_url, api_key, model_name,
+                   id, tenant_id, workspace_id, name, provider, base_url, api_key, model_name,
                    temperature, max_tokens, is_default, role,
                    fallback_model_id, context_window, supports_thinking
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 model_id,
+                ctx.tenant_id,
+                ctx.workspace_id,
                 body.name,
                 body.provider,
                 body.base_url.strip(),
@@ -260,14 +279,21 @@ def create_model(body: ModelCreate):
             ),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM models WHERE id = ? AND tenant_id = ? AND workspace_id = ?",
+            (model_id, ctx.tenant_id, ctx.workspace_id),
+        ).fetchone()
     return _serialize_model_row(row)
 
 
 @router.get("/{model_id}", response_model=ModelOut)
 def get_model_endpoint(model_id: str):
+    ctx = get_tenant_context()
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM models WHERE id = ? AND tenant_id = ? AND workspace_id = ?",
+            (model_id, ctx.tenant_id, ctx.workspace_id),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
     return _serialize_model_row(row)
@@ -286,9 +312,11 @@ def update_model(model_id: str, body: ModelCreate):
             detail=f"Invalid model role '{body.role}'. Valid roles: {', '.join(MODEL_ROLES)}",
         )
 
+    ctx = get_tenant_context()
     with get_db() as conn:
         existing = conn.execute(
-            "SELECT * FROM models WHERE id = ?", (model_id,)
+            "SELECT * FROM models WHERE id = ? AND tenant_id = ? AND workspace_id = ?",
+            (model_id, ctx.tenant_id, ctx.workspace_id),
         ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Model not found")
@@ -302,13 +330,16 @@ def update_model(model_id: str, body: ModelCreate):
             final_api_key = existing["api_key"] or ""
 
         if body.is_default:
-            conn.execute("UPDATE models SET is_default = 0 WHERE is_default = 1")
+            conn.execute(
+                "UPDATE models SET is_default = 0 WHERE tenant_id = ? AND workspace_id = ? AND is_default = 1",
+                (ctx.tenant_id, ctx.workspace_id),
+            )
         conn.execute(
             """UPDATE models
                SET name=?, provider=?, base_url=?, api_key=?, model_name=?,
                    temperature=?, max_tokens=?, is_default=?, role=?,
                    fallback_model_id=?, context_window=?, supports_thinking=?
-               WHERE id=?""",
+               WHERE id=? AND tenant_id=? AND workspace_id=?""",
             (
                 body.name,
                 body.provider,
@@ -323,16 +354,27 @@ def update_model(model_id: str, body: ModelCreate):
                 body.context_window,
                 int(body.supports_thinking),
                 model_id,
+                ctx.tenant_id,
+                ctx.workspace_id,
             ),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM models WHERE id = ? AND tenant_id = ? AND workspace_id = ?",
+            (model_id, ctx.tenant_id, ctx.workspace_id),
+        ).fetchone()
     return _serialize_model_row(row)
 
 
 @router.delete("/{model_id}")
 def delete_model(model_id: str):
+    ctx = get_tenant_context()
     with get_db() as conn:
-        conn.execute("DELETE FROM models WHERE id = ?", (model_id,))
+        cur = conn.execute(
+            "DELETE FROM models WHERE id = ? AND tenant_id = ? AND workspace_id = ?",
+            (model_id, ctx.tenant_id, ctx.workspace_id),
+        )
         conn.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Model not found")
     return {"ok": True}
