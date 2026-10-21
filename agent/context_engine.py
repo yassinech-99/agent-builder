@@ -61,6 +61,10 @@ THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*", flags=re.IGNORECASE)
 PROTECTED_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "memory",
+        "recall_memories",
+        "upsert_memory_fact",
+        "update_core_memory_block",
+        "propose_procedural_rule",
         "read_artifact",
         "activate_skill",
         "read_skill_resource",
@@ -481,6 +485,7 @@ class FiveStageContextEngine:
         active_skill_slugs: list[str] | None = None,
         force_compact: bool = False,
         compactor_fn: Callable[[str], Awaitable[str]] | None = None,
+        memory_flush_fn: Callable[[list[str], TenantContext], Awaitable[None]] | None = None,
     ) -> ContextProjection:
         cfg = policy or ContextPolicy()
         active_ctx = ctx or get_tenant_context()
@@ -597,6 +602,11 @@ class FiveStageContextEngine:
                 recent_groups = turn_groups[-keep_n:]
                 older_flat = [m for grp in older_groups for m in grp]
                 harvested_facts = extract_pre_compact_facts(older_flat)
+                if memory_flush_fn is not None and harvested_facts:
+                    try:
+                        await memory_flush_fn(harvested_facts, active_ctx)
+                    except Exception as flush_exc:
+                        logger.warning("Pre-compact memory flush failed cleanly: %s", flush_exc)
 
                 if compactor_fn is not None:
                     serialized = "\n".join(

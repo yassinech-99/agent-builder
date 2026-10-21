@@ -175,6 +175,7 @@ class MultiTenantVectorStore:
         vectors: list[list[float]],
         texts: list[str],
         metadatas: list[dict[str, Any]] | None = None,
+        namespace: str = "rag",
         ctx: TenantContext | None = None,
     ) -> int:
         if not vectors or not texts:
@@ -188,13 +189,13 @@ class MultiTenantVectorStore:
         sid = sanitize_tenant_identifier(source_id)
 
         dim = len(vectors[0])
-        collection = await self.ensure_collection(dim, namespace="rag")
+        collection = await self.ensure_collection(dim, namespace=namespace)
         client = await self.get_client()
 
         metas = metadatas or [{} for _ in texts]
         points: list[models.PointStruct] = []
         for idx, (vec, content, meta) in enumerate(zip(vectors, texts, metas)):
-            point_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}:{wid}:{sid}:{idx}"))
+            point_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{namespace}:{tid}:{wid}:{sid}:{idx}"))
             points.append(
                 models.PointStruct(
                     id=point_uuid,
@@ -223,9 +224,10 @@ class MultiTenantVectorStore:
     async def search(
         self,
         *,
-        source_id: str,
+        source_id: str | None = None,
         query_vector: list[float],
         k: int = 4,
+        namespace: str = "rag",
         ctx: TenantContext | None = None,
     ) -> list[dict[str, Any]]:
         if not query_vector:
@@ -233,22 +235,25 @@ class MultiTenantVectorStore:
 
         active = ctx or get_tenant_context()
         tid = sanitize_tenant_identifier(active.tenant_id)
-        wid = sanitize_tenant_identifier(active.workspace_id)
-        sid = sanitize_tenant_identifier(source_id)
+        wid = sanitize_tenant_identifier(active.tenant_id if active.workspace_id is None else active.workspace_id)
 
         dim = len(query_vector)
-        collection = self.collection_name_for_dim(dim, namespace="rag")
+        collection = self.collection_name_for_dim(dim, namespace=namespace)
         client = await self.get_client()
         if not await client.collection_exists(collection):
             return []
 
-        flt = models.Filter(
-            must=[
-                models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tid)),
-                models.FieldCondition(key="workspace_id", match=models.MatchValue(value=wid)),
-                models.FieldCondition(key="source_id", match=models.MatchValue(value=sid)),
-            ]
-        )
+        must_conditions = [
+            models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tid)),
+            models.FieldCondition(key="workspace_id", match=models.MatchValue(value=wid)),
+        ]
+        if source_id is not None:
+            sid = sanitize_tenant_identifier(source_id)
+            must_conditions.append(
+                models.FieldCondition(key="source_id", match=models.MatchValue(value=sid))
+            )
+
+        flt = models.Filter(must=must_conditions)
         res = await client.query_points(
             collection_name=collection,
             query=query_vector,
@@ -274,6 +279,7 @@ class MultiTenantVectorStore:
         *,
         source_id: str,
         dim: int | None = None,
+        namespace: str = "rag",
         ctx: TenantContext | None = None,
     ) -> None:
         active = ctx or get_tenant_context()
@@ -283,11 +289,12 @@ class MultiTenantVectorStore:
 
         client = await self.get_client()
         collections_resp = await client.get_collections()
+        prefix = f"nimagents_{namespace}_dim_"
         target_names = [
             c.name
             for c in collections_resp.collections
-            if (dim is None and c.name.startswith("nimagents_rag_dim_"))
-            or (dim is not None and c.name == self.collection_name_for_dim(dim, namespace="rag"))
+            if (dim is None and c.name.startswith(prefix))
+            or (dim is not None and c.name == self.collection_name_for_dim(dim, namespace=namespace))
         ]
         flt = models.Filter(
             must=[

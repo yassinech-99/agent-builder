@@ -80,18 +80,21 @@ def reset_tenant_context(token: Token[TenantContext]) -> None:
 
 @contextmanager
 def tenant_scope(
-    tenant_id: str = DEFAULT_TENANT_ID,
+    tenant_id: str | TenantContext = DEFAULT_TENANT_ID,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     user_id: str = DEFAULT_USER_ID,
     plan_tier: str = DEFAULT_PLAN_TIER,
 ) -> Generator[TenantContext, None, None]:
     """Bind a `TenantContext` cleanly for the duration of a sync or async block."""
-    ctx = TenantContext(
-        tenant_id=sanitize_tenant_identifier(tenant_id, DEFAULT_TENANT_ID),
-        workspace_id=sanitize_tenant_identifier(workspace_id, DEFAULT_WORKSPACE_ID),
-        user_id=sanitize_tenant_identifier(user_id, DEFAULT_USER_ID),
-        plan_tier=sanitize_tenant_identifier(plan_tier, DEFAULT_PLAN_TIER).lower(),
-    )
+    if isinstance(tenant_id, TenantContext):
+        ctx = tenant_id
+    else:
+        ctx = TenantContext(
+            tenant_id=sanitize_tenant_identifier(tenant_id, DEFAULT_TENANT_ID),
+            workspace_id=sanitize_tenant_identifier(workspace_id, DEFAULT_WORKSPACE_ID),
+            user_id=sanitize_tenant_identifier(user_id, DEFAULT_USER_ID),
+            plan_tier=sanitize_tenant_identifier(plan_tier, DEFAULT_PLAN_TIER).lower(),
+        )
     token = set_tenant_context(ctx)
     try:
         yield ctx

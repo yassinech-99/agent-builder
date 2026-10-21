@@ -34,6 +34,7 @@ from api.routes import (
     lexical_rag,
     local_rag,
     mcp,
+    memories as memories_router,
     models,
     rag,
     scale,
@@ -142,6 +143,7 @@ app.include_router(tools_router.router)
 app.include_router(skills_router.router)
 app.include_router(context_router.router)
 app.include_router(sessions_router.router)
+app.include_router(memories_router.router)
 
 
 @app.get("/")

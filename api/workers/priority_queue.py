@@ -150,6 +150,18 @@ class PriorityWorkPool:
             return await fut
         return job_id
 
+    async def run_coroutine(
+        self,
+        tenant_id: str,
+        coro_factory: Callable[[], Awaitable[Any]],
+        *,
+        priority: int = 1,
+    ) -> Any:
+        ctx = TenantContext(tenant_id=tenant_id)
+        if priority <= 0:
+            return await self.submit_interactive(coro_factory, ctx=ctx)
+        return await self.submit_background(coro_factory, ctx=ctx)
+
     async def enqueue(
         self,
         coro_factory: Callable[[], Awaitable[Any]],
