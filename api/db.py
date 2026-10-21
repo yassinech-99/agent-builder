@@ -275,6 +275,75 @@ CREATE TABLE IF NOT EXISTS session_compactions (
 );
 """
 
+CREATE_DURABLE_SESSIONS = """
+CREATE TABLE IF NOT EXISTS durable_sessions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT NOT NULL DEFAULT 'anonymous',
+    assistant_id TEXT NOT NULL DEFAULT 'agent',
+    title TEXT NOT NULL DEFAULT 'New Session',
+    pinned BOOLEAN DEFAULT 0,
+    archived BOOLEAN DEFAULT 0,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    forked_from_session_id TEXT DEFAULT '',
+    forked_from_seq INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'idle',
+    pending_prompt TEXT DEFAULT '',
+    message_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_SESSION_EVENTS = """
+CREATE TABLE IF NOT EXISTS session_events (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL,
+    seq_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'system',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    checkpoint_id TEXT DEFAULT '',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_SESSION_LEASES = """
+CREATE TABLE IF NOT EXISTS session_leases (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL DEFAULT 1,
+    acquired_at REAL NOT NULL DEFAULT 0,
+    expires_at REAL NOT NULL DEFAULT 0
+);
+"""
+
+CREATE_SUBAGENT_RUNS = """
+CREATE TABLE IF NOT EXISTS subagent_runs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    parent_session_id TEXT NOT NULL DEFAULT '',
+    child_session_id TEXT NOT NULL,
+    specialist_role TEXT NOT NULL DEFAULT 'researcher',
+    objective TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'completed',
+    tokens_used INTEGER DEFAULT 0,
+    steps_count INTEGER DEFAULT 0,
+    duration_ms REAL DEFAULT 0.0,
+    distilled_output TEXT NOT NULL DEFAULT '',
+    trace_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 TENANT_SCOPED_TABLES = (
     "models",
     "rag_sources",
@@ -289,6 +358,10 @@ TENANT_SCOPED_TABLES = (
     "context_artifacts",
     "agent_skills",
     "session_compactions",
+    "durable_sessions",
+    "session_events",
+    "session_leases",
+    "subagent_runs",
 )
 
 _MIGRATE_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -371,6 +444,10 @@ def init_db() -> None:
             CREATE_CONTEXT_ARTIFACTS,
             CREATE_AGENT_SKILLS,
             CREATE_SESSION_COMPACTIONS,
+            CREATE_DURABLE_SESSIONS,
+            CREATE_SESSION_EVENTS,
+            CREATE_SESSION_LEASES,
+            CREATE_SUBAGENT_RUNS,
         ):
             conn.execute(ddl)
 

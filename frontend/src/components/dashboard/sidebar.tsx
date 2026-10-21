@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   MessageSquare,
+  History,
   Bot,
   Wrench,
   BookOpenCheck,
@@ -28,6 +29,7 @@ import { NIMAGENTS_STORAGE } from "@/lib/runtime-urls";
 
 const NAV_ITEMS = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
+  { href: "/sessions", label: "Sessions", icon: History },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/tools", label: "Tools", icon: Wrench },
   { href: "/skills", label: "Skills", icon: BookOpenCheck },

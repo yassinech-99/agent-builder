@@ -66,6 +66,8 @@ PROTECTED_TOOL_NAMES: frozenset[str] = frozenset(
         "read_skill_resource",
         "human_input",
         "tool_search",
+        "delegate_to_subagent",
+        "delegate_parallel_subagents",
     }
 )
 

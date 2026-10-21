@@ -13,6 +13,7 @@ import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 
 from api.core.tenancy import (
@@ -186,8 +187,6 @@ async def search_local_source_async(
 
 
 def _split_docs_sync(docs: list[Any], chunk_size: int, chunk_overlap: int) -> list[Any]:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,

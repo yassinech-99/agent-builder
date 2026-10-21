@@ -218,6 +218,67 @@ CREATE TABLE IF NOT EXISTS session_compactions (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS durable_sessions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT NOT NULL DEFAULT 'anonymous',
+    assistant_id TEXT NOT NULL DEFAULT 'agent',
+    title TEXT NOT NULL DEFAULT 'New Session',
+    pinned BOOLEAN DEFAULT FALSE,
+    archived BOOLEAN DEFAULT FALSE,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    forked_from_session_id TEXT DEFAULT '',
+    forked_from_seq INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'idle',
+    pending_prompt TEXT DEFAULT '',
+    message_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS session_events (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL,
+    seq_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'system',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    checkpoint_id TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS session_leases (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL DEFAULT 1,
+    acquired_at DOUBLE PRECISION NOT NULL DEFAULT 0,
+    expires_at DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS subagent_runs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    parent_session_id TEXT NOT NULL DEFAULT '',
+    child_session_id TEXT NOT NULL,
+    specialist_role TEXT NOT NULL DEFAULT 'researcher',
+    objective TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'completed',
+    tokens_used INTEGER DEFAULT 0,
+    steps_count INTEGER DEFAULT 0,
+    duration_ms DOUBLE PRECISION DEFAULT 0.0,
+    distilled_output TEXT NOT NULL DEFAULT '',
+    trace_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable & FORCE Row-Level Security across every multi-tenant table
 DO $$
 DECLARE
@@ -236,7 +297,11 @@ BEGIN
         'custom_tools',
         'context_artifacts',
         'agent_skills',
-        'session_compactions'
+        'session_compactions',
+        'durable_sessions',
+        'session_events',
+        'session_leases',
+        'subagent_runs'
     ]
     LOOP
         EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%I_tenant_ws ON %I (tenant_id, workspace_id)', tbl, tbl);

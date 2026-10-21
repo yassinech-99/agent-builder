@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useThreads } from "@/providers/Thread";
 import { Thread } from "@langchain/langgraph-sdk";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { getContentString } from "../utils";
 import { useQueryState, parseAsBoolean } from "nuqs";
@@ -12,8 +13,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PanelRightOpen, PanelRightClose, Trash2 } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Pin, Search, Trash2 } from "lucide-react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+
+const PINNED_STORAGE_KEY = "nimagents:pinned_threads";
 
 function getDateGroup(ts: string | undefined): string {
   if (!ts) return "Older";
@@ -30,7 +33,7 @@ function getDateGroup(ts: string | undefined): string {
   return "Older";
 }
 
-const GROUP_ORDER = ["Today", "Yesterday", "This Week", "Older"];
+const GROUP_ORDER = ["Pinned", "Today", "Yesterday", "This Week", "Older"];
 
 function ThreadList({
   threads,
@@ -42,12 +45,45 @@ function ThreadList({
   onDelete?: (threadId: string) => void;
 }) {
   const [threadId, setThreadId] = useQueryState("threadId");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      return JSON.parse(window.localStorage.getItem(PINNED_STORAGE_KEY) || "[]");
+    } catch {
+      return [];
+    }
+  });
+
+  const togglePin = (id: string) => {
+    setPinnedIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [id, ...prev];
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
 
   const grouped = useMemo(() => {
     const groups: Record<string, Thread[]> = {};
+    const needle = searchQuery.trim().toLowerCase();
     for (const t of threads) {
+      let labelText = t.thread_id;
+      if (
+        typeof t.values === "object" &&
+        t.values &&
+        "messages" in t.values &&
+        Array.isArray(t.values.messages) &&
+        t.values.messages?.length > 0
+      ) {
+        labelText = getContentString(t.values.messages[0].content);
+      }
+      if (needle && !labelText.toLowerCase().includes(needle) && !t.thread_id.toLowerCase().includes(needle)) {
+        continue;
+      }
       const ts = (t as any).updated_at || (t as any).created_at;
-      const g = getDateGroup(ts);
+      const g = pinnedIds.includes(t.thread_id) ? "Pinned" : getDateGroup(ts);
       if (!groups[g]) groups[g] = [];
       groups[g].push(t);
     }
@@ -55,10 +91,19 @@ function ThreadList({
       label: g,
       items: groups[g],
     }));
-  }, [threads]);
+  }, [threads, searchQuery, pinnedIds]);
 
   return (
-    <div className="flex h-full w-full flex-col items-start justify-start gap-1 overflow-y-scroll px-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent">
+    <div className="flex h-full w-full flex-col items-start justify-start gap-1 overflow-y-scroll px-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent">
+      <div className="relative mb-2 w-full px-1">
+        <Search className="text-muted-foreground absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
+        <Input
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search threads..."
+          className="h-8 pl-8 text-xs"
+        />
+      </div>
       {grouped.map((group) => (
         <div key={group.label} className="w-full">
           <p className="text-muted-foreground mb-1 mt-3 px-2 text-[10px] font-semibold uppercase tracking-wider first:mt-1">
@@ -77,6 +122,7 @@ function ThreadList({
               itemText = getContentString(firstMessage.content);
             }
             const isActive = t.thread_id === threadId;
+            const isPinned = pinnedIds.includes(t.thread_id);
             return (
               <div
                 key={t.thread_id}
@@ -93,6 +139,17 @@ function ThreadList({
                   }}
                 >
                   <p className="truncate text-ellipsis">{itemText}</p>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title={isPinned ? "Unpin thread" : "Pin thread"}
+                  className={`h-7 w-7 shrink-0 transition-opacity ${
+                    isPinned ? "text-amber-500 opacity-100" : "opacity-0 group-hover:opacity-100"
+                  }`}
+                  onClick={() => togglePin(t.thread_id)}
+                >
+                  <Pin className="size-3" />
                 </Button>
                 {onDelete && (
                   <Button
