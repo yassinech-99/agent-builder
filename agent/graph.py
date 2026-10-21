@@ -34,6 +34,8 @@ from agent.context_engine import (
     context_engine,
 )
 from agent.inference_gateway import compute_prefix_hash
+from agent.memory_engine import build_memory_runtime_tools, memory_engine
+from api.services.memory_consolidator import memory_consolidator
 from agent.model import get_model, sanitize_multimodal_messages
 from agent.registry import (
     PINNED_CORE_TOOL_IDS,
@@ -174,6 +176,8 @@ def _parse_agent_config(config: RunnableConfig) -> dict[str, Any]:
         "session_memory": configurable.get("session_memory", ""),
         "enable_subagents": configurable.get("enable_subagents", True),
         "subagent_depth": int(configurable.get("subagent_depth", 0) or 0),
+        "enable_memory": configurable.get("enable_memory", True),
+        "enable_sleep_consolidation": configurable.get("enable_sleep_consolidation", True),
     }
 
 
@@ -630,6 +634,16 @@ async def make_graph(config: RunnableConfig):
         artifact_tool = build_read_artifact_tool(run_ctx)
         base_tools.append(artifact_tool)
 
+        # Phase 6: 4-Tier Cognitive Memory Runtime Tools (`recall_memories`, `upsert_memory_fact`, ...)
+        if bool(agent_config.get("enable_memory", True)):
+            base_tools.extend(
+                build_memory_runtime_tools(
+                    run_ctx,
+                    agent_id=agent_name,
+                    thread_id=thread_id,
+                )
+            )
+
         explicit_skill_ids = agent_config.get("enabled_skill_ids")
         allowed_skill_filter = set(explicit_skill_ids) if explicit_skill_ids is not None else None
         tenant_skills = load_tenant_skills(
@@ -742,14 +756,40 @@ async def make_graph(config: RunnableConfig):
                 for t in active_turn_tools
             )
 
+            combined_session_memory = (
+                await asyncio.to_thread(
+                    lambda: memory_engine.render_session_prefix_memories(
+                        agent_id=agent_name,
+                        extra_notes=session_memory_str,
+                        ctx=run_ctx,
+                    )
+                )
+                if bool(agent_config.get("enable_memory", True))
+                else session_memory_str
+            )
+
+            async def _flush_pre_compact_facts(facts: list[str], flush_ctx: TenantContext) -> None:
+                for idx_f, raw_fact in enumerate(facts[:8]):
+                    await memory_engine.upsert_semantic_fact(
+                        subject=f"session:{thread_id or 'active'}",
+                        predicate=f"salient_note_{idx_f + 1}",
+                        obj=raw_fact[:300],
+                        category="pre_compact",
+                        importance=0.8,
+                        agent_id=agent_name,
+                        source_session_id=thread_id,
+                        ctx=flush_ctx,
+                    )
+
             projection = await context_engine.shape_context(
                 static_system_prompt=system_prompt,
-                session_memory_notes=session_memory_str,
+                session_memory_notes=combined_session_memory,
                 active_skills_block=active_skills_md,
                 prior_compaction_checkpoint=prior_checkpoint,
                 messages=clean_history,
                 tool_schema_tokens=bound_schema_toks,
                 policy=context_policy,
+                memory_flush_fn=_flush_pre_compact_facts if bool(agent_config.get("enable_memory", True)) else None,
                 ctx=run_ctx,
                 thread_id=thread_id,
                 agent_name=agent_name,
@@ -758,6 +798,18 @@ async def make_graph(config: RunnableConfig):
             )
 
             response = await bound_llm.ainvoke(projection.to_model_messages())
+            if (
+                bool(agent_config.get("enable_memory", True))
+                and bool(agent_config.get("enable_sleep_consolidation", True))
+                and not getattr(response, "tool_calls", None)
+            ):
+                memory_consolidator.enqueue_sleep_consolidation(
+                    [*clean_history, response],
+                    session_id=thread_id,
+                    agent_id=agent_name,
+                    ctx=run_ctx,
+                )
+
             state_update: dict[str, Any] = {"messages": [response]}
             if projection.compacted_this_turn and projection.updated_checkpoint:
                 state_update["compaction_checkpoint"] = projection.updated_checkpoint

@@ -279,6 +279,80 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS memory_blocks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT NOT NULL DEFAULT 'anonymous',
+    agent_id TEXT NOT NULL DEFAULT 'default',
+    block_type TEXT NOT NULL DEFAULT 'agent_notes',
+    title TEXT NOT NULL DEFAULT 'Agent Notes',
+    content TEXT NOT NULL DEFAULT '',
+    token_count INTEGER DEFAULT 0,
+    pinned BOOLEAN DEFAULT TRUE,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS semantic_memories (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT NOT NULL DEFAULT 'anonymous',
+    agent_id TEXT NOT NULL DEFAULT 'default',
+    subject TEXT NOT NULL,
+    subject_norm TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    predicate_norm TEXT NOT NULL,
+    object TEXT NOT NULL,
+    object_norm TEXT NOT NULL,
+    statement TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'fact',
+    confidence DOUBLE PRECISION DEFAULT 0.9,
+    importance DOUBLE PRECISION DEFAULT 0.7,
+    access_count INTEGER DEFAULT 0,
+    valid_from TIMESTAMPTZ DEFAULT NOW(),
+    invalidated_at TIMESTAMPTZ DEFAULT NULL,
+    superseded_by_id TEXT DEFAULT '',
+    source_session_id TEXT DEFAULT '',
+    source_turn_id TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS episodic_memories (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT NOT NULL DEFAULT 'anonymous',
+    agent_id TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    problem TEXT NOT NULL DEFAULT '',
+    approach TEXT NOT NULL DEFAULT '',
+    key_tool_steps_json TEXT NOT NULL DEFAULT '[]',
+    user_corrections TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'succeeded',
+    importance DOUBLE PRECISION DEFAULT 0.75,
+    access_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS procedural_memories (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    agent_id TEXT NOT NULL DEFAULT 'default',
+    title TEXT NOT NULL,
+    rule_prompt TEXT NOT NULL,
+    rationale TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'proposed',
+    version INTEGER NOT NULL DEFAULT 1,
+    history_json TEXT NOT NULL DEFAULT '[]',
+    source_session_id TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable & FORCE Row-Level Security across every multi-tenant table
 DO $$
 DECLARE
@@ -301,7 +375,11 @@ BEGIN
         'durable_sessions',
         'session_events',
         'session_leases',
-        'subagent_runs'
+        'subagent_runs',
+        'memory_blocks',
+        'semantic_memories',
+        'episodic_memories',
+        'procedural_memories'
     ]
     LOOP
         EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%I_tenant_ws ON %I (tenant_id, workspace_id)', tbl, tbl);

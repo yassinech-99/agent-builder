@@ -243,7 +243,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 
 ---
 
-## Phase 6 — 4-Tier Agent Memory System & Async ("Sleep-Time") Consolidation
+## Phase 6 — 4-Tier Agent Memory System & Async ("Sleep-Time") Consolidation *(✅ COMPLETED)*
 
 - **Tier 1 — Pinned Core Memory Blocks (`memory_blocks`, `<1,500` tok):** Editable Markdown blocks (`user_profile`, `workspace_context`, `agent_notes`) cached cleanly in Block 2.
 - **Tier 2 — Bi-Temporal Semantic Fact Store (`semantic_memories`):** Atomic facts `(subject, predicate, object, confidence, valid_from, invalidated_at, superseded_by_id, source_session_id)` indexed in both **tenant-partitioned Qdrant (`NVIDIAEmbeddings`) AND Meilisearch BM25** so conflicting outdated facts auto-invalidate without losing historical auditability!
@@ -292,7 +292,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 | **Phase 3** *(✅ DONE)* | **Unified `ToolRegistry`, `defer_loading` + `tool_search`, `orchestrate_tools` & Sandbox Hands** | `agent/registry.py`, `agent/sandbox_hands.py`, `agent/graph.py`, `api/routes/tools.py`, `app/(dashboard)/tools/page.tsx` | 50+ tools achieve `87%+` context savings (`648` vs `5,000+` tok); zero-secret-leak Unix RPC sandbox + `AgentInbox` HITL pass 26/26 pytest |
 | **Phase 4** *(✅ DONE)* | **5-Stage Context Engine, Prefix KV-Cache Alignment, `SKILL.md` & Context Meter** | `agent/context_engine.py`, `agent/skills.py`, `api/routes/{skills,context}.py`, `app/(dashboard)/skills/page.tsx`, `components/thread/context-meter.tsx` | Byte-stable Block 1 prefix across turns & users; 100-turn stress run stays bounded with `0` overflows (`31/31` pytest + `16/16` Next.js routes green) |
 | **Phase 5** *(✅ DONE)* | **Durable Sessions, `Last-Event-ID` Stream Replay, Checkpoint Forking & Sub-Agents** | `api/services/run_manager.py`, `api/routes/sessions.py`, `agent/subagents.py`, `app/(dashboard)/sessions/page.tsx`, `ThreadHistory` | Pod kill mid-stream recovers cleanly via `wake(session_id)`; tab reload replays live stream; thread fork + sub-agent traces green (`36/36` pytest + `17/17` Next.js routes) |
-| **Phase 6** | **4-Tier Cognitive Memory + Bi-Temporal Facts + Sleep-Time Consolidator + `/memories`** | `agent/memory_engine.py`, `api/services/memory_consolidator.py`, `api/routes/memories.py`, `app/(dashboard)/memories/page.tsx` | `0ms` write latency on chat path; conflicting facts auto-supersede; `<35ms` hybrid memory recall |
+| **Phase 6** *(✅ DONE)* | **4-Tier Cognitive Memory + Bi-Temporal Facts + Sleep-Time Consolidator + `/memories`** | `agent/memory_engine.py`, `api/services/memory_consolidator.py`, `api/routes/memories.py`, `app/(dashboard)/memories/page.tsx` | `0ms` write latency on chat path; conflicting facts auto-supersede; `<35ms` hybrid memory recall (`41/41` pytest + `18/18` Next.js routes green) |
 | **Phase 7** | **Contextual + Parent-Child + `NVIDIAEmbeddings` Qdrant + BM25 + `NVIDIARerank` RAG** | `api/services/rag_pipeline.py`, `api/routes/rag.py`, `app/(dashboard)/rag/page.tsx`, `messages/citations.tsx` | Streaming MinIO upload + async P1 indexing + batched `NVIDIARerank` + clickable `[1]` citation drawer |
 | **Phase 8** | **`NemoGuard` Pre/Post Safety, `Riva NIM` Voice, FinOps `/analytics` & `/evals`** | `agent/guardrails_engine.py`, `api/routes/voice.py`, `app/(dashboard)/analytics/`, `app/(dashboard)/evals/` | Deterministic input/tool/output guardrails; real-time streaming voice; multi-tenant FinOps & CI eval suite |
 
