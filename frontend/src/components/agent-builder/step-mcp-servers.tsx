@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useAgentConfig, MCPServerConfig } from "@/providers/AgentConfig";
+import { getBuilderApiUrl } from "@/lib/runtime-urls";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 
 interface MCPToolInfo {
@@ -12,9 +13,6 @@ interface MCPToolInfo {
   description: string | null;
   inputSchema: Record<string, unknown> | null;
 }
-
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
 
 export function StepMCPServers() {
   const { config, setConfig } = useAgentConfig();
@@ -32,7 +30,7 @@ export function StepMCPServers() {
     setDiscoverUrl(newUrl.trim());
 
     try {
-      const res = await fetch(`${BUILDER_API}/api/mcp/discover`, {
+      const res = await fetch(`${getBuilderApiUrl()}/api/mcp/discover`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: newUrl.trim() }),

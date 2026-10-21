@@ -12,8 +12,7 @@ import { toast } from "sonner";
 import { Mic, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { VoiceSession } from "@/components/voice/voice-session";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:2024";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 
 function ChatContentInner() {
   const [assistantId, setAssistantId] = useQueryState("assistantId", {
@@ -68,7 +67,7 @@ function ChatContentInner() {
       try {
         const { createClient } = await import("@/providers/client");
         const { getApiKey } = await import("@/lib/api-key");
-        const client = createClient(API_URL, getApiKey() ?? undefined);
+        const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
         const assistant = await client.assistants.get(assistantId);
         const cfg = (assistant as any)?.config?.configurable;
         setAgentVoiceEnabled(!!cfg?.voice_enabled);

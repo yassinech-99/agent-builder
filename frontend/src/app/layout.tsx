@@ -1,18 +1,13 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Inter } from "next/font/google";
 import React from "react";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
-
-const inter = Inter({
-  subsets: ["latin"],
-  preload: true,
-  display: "swap",
-});
+import { ThemeProvider } from "next-themes";
 
 export const metadata: Metadata = {
-  title: "NovaGrid Agents",
-  description: "Nova-native enterprise agent workspace on AWS",
+  title: "nimAgents — Multi-Provider NVIDIA NIM Agent Studio",
+  description:
+    "Build, orchestrate, and scale AI agents on NVIDIA NIM, NVIDIA Dynamo, OpenAI, Anthropic, OpenRouter, vLLM, and Ollama.",
 };
 
 export default function RootLayout({
@@ -21,9 +16,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={inter.className}>
-        <NuqsAdapter>{children}</NuqsAdapter>
+    <html lang="en" suppressHydrationWarning>
+      <body className="font-sans antialiased">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          <NuqsAdapter>{children}</NuqsAdapter>
+        </ThemeProvider>
       </body>
     </html>
   );

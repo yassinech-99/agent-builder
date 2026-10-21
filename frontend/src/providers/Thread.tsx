@@ -12,6 +12,7 @@ import {
   SetStateAction,
 } from "react";
 import { createClient } from "./client";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 
 export interface SessionSummary {
   thread_id: string;
@@ -63,13 +64,9 @@ function getThreadSearchMetadata(
   }
 }
 
-const DEFAULT_API_URL = "http://localhost:2024";
-
 export function ThreadProvider({ children }: { children: ReactNode }) {
-  const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
-  const [apiUrl] = useQueryState("apiUrl", {
-    defaultValue: envApiUrl || DEFAULT_API_URL,
-  });
+  const [queryApiUrl] = useQueryState("apiUrl");
+  const apiUrl = queryApiUrl || getRuntimeApiUrl();
   const [assistantId] = useQueryState("assistantId");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(false);

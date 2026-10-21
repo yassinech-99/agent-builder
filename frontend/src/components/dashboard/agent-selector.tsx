@@ -3,10 +3,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/providers/client";
 import { getApiKey } from "@/lib/api-key";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 import { Bot } from "lucide-react";
 import type { Assistant } from "@langchain/langgraph-sdk";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:2024";
 
 interface AgentSelectorProps {
   value: string;
@@ -18,7 +17,7 @@ export function AgentSelector({ value, onChange }: AgentSelectorProps) {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const client = createClient(API_URL, getApiKey() ?? undefined);
+      const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
       const results = await client.assistants.search({
         graphId: "agent",
         limit: 100,

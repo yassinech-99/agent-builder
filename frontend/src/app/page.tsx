@@ -1,11 +1,13 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { NovaGridLogo } from "@/components/icons/grid-agents";
+import { NimAgentsLogo } from "@/components/icons/nim-agents";
 import { RuntimeSplash } from "@/components/runtime-splash";
+import { NIMAGENTS_STORAGE } from "@/lib/runtime-urls";
+import { Cpu, Database, Layers, ShieldCheck, ArrowRight } from "lucide-react";
 
-const MOCK_USER = "demo";
-const MOCK_PASS = "demo123";
+const DEMO_USER = "demo";
+const DEMO_PASS = "demo123";
 
 export default function HomePage() {
   const [isAuthed, setIsAuthed] = useState(false);
@@ -16,7 +18,7 @@ export default function HomePage() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    const logged = sessionStorage.getItem("novagrid:mock-auth");
+    const logged = sessionStorage.getItem(NIMAGENTS_STORAGE.auth);
     if (logged === "true") {
       setIsAuthed(true);
     }
@@ -25,15 +27,15 @@ export default function HomePage() {
   const handleNewsletter = (e: FormEvent) => {
     e.preventDefault();
     if (!email.trim()) return;
-    localStorage.setItem("novagrid:newsletter-email", email.trim());
+    localStorage.setItem(NIMAGENTS_STORAGE.newsletter, email.trim());
     setNewsletterDone(true);
     setEmail("");
   };
 
-  const handleMockLogin = (e: FormEvent) => {
+  const handleLogin = (e: FormEvent) => {
     e.preventDefault();
-    if (username.trim() === MOCK_USER && password === MOCK_PASS) {
-      sessionStorage.setItem("novagrid:mock-auth", "true");
+    if (username.trim() === DEMO_USER && password === DEMO_PASS) {
+      sessionStorage.setItem(NIMAGENTS_STORAGE.auth, "true");
       setAuthError(null);
       setIsAuthed(true);
       return;
@@ -41,127 +43,164 @@ export default function HomePage() {
     setAuthError("Invalid credentials. Use demo / demo123.");
   };
 
+  const handleQuickDemoAccess = () => {
+    sessionStorage.setItem(NIMAGENTS_STORAGE.auth, "true");
+    setAuthError(null);
+    setIsAuthed(true);
+  };
+
   if (isAuthed) {
     return <RuntimeSplash />;
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 px-6 py-10 dark:from-slate-950 dark:to-slate-900">
+    <div className="min-h-screen bg-gradient-to-br from-zinc-50 via-white to-emerald-50/40 px-6 py-10 dark:from-zinc-950 dark:via-zinc-950 dark:to-emerald-950/20">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-10">
-        <header className="flex items-center gap-3">
-          <NovaGridLogo width={36} height={36} className="text-primary" />
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">NovaGrid Agents</h1>
-            <p className="text-muted-foreground text-sm">
-              Nova-native enterprise agent workspace on AWS
-            </p>
+        <header className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <NimAgentsLogo width={38} height={38} className="text-primary" />
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">nimAgents</h1>
+              <p className="text-muted-foreground text-sm">
+                NVIDIA NIM &amp; Multi-Provider AI Agent Studio
+              </p>
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={handleQuickDemoAccess}
+            className="border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs font-medium transition-colors"
+          >
+            Launch Studio
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
         </header>
 
-        <section className="grid gap-8 md:grid-cols-[1.2fr_0.8fr]">
+        <section className="grid gap-8 md:grid-cols-[1.25fr_0.75fr]">
           <div className="space-y-6">
-            <div className="rounded-2xl border bg-white/80 p-8 shadow-sm backdrop-blur dark:bg-slate-900/70">
-              <p className="text-primary mb-2 text-sm font-medium uppercase tracking-wider">
-                Product
+            <div className="bg-card/85 rounded-2xl border p-8 shadow-sm backdrop-blur">
+              <p className="text-primary mb-2 text-xs font-semibold uppercase tracking-widest">
+                Open GPU-Native Agent Platform
               </p>
-              <h2 className="text-4xl font-semibold tracking-tight">
-                Nova-powered agents with reasoning, retrieval, and browser automation
+              <h2 className="text-4xl font-semibold leading-tight tracking-tight">
+                Reasoning agents powered by NVIDIA NIM, Dynamo, and any open model endpoint
               </h2>
-              <p className="text-muted-foreground mt-4 text-base">
-                NovaGrid Agents lets teams build enterprise AI agents on AWS, powered by
-                Nova 2 Lite reasoning, Nova embeddings, and Nova Act browser automation.
+              <p className="text-muted-foreground mt-4 text-base leading-relaxed">
+                Build, test, and scale tool-using agents across Nemotron, DeepSeek-R1,
+                Qwen3, OpenAI, Anthropic, vLLM, SGLang, and Ollama — with live
+                reasoning traces, hybrid RAG + reranking, and MCP discovery.
               </p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <div className="rounded-xl border bg-white/80 p-5 shadow-sm dark:bg-slate-900/60">
-                <h3 className="font-medium">Nova-Powered Reasoning</h3>
-                <p className="text-muted-foreground mt-2 text-sm">
-                  Amazon Nova 2 Lite for fast, cost-effective agent reasoning and tool use.
+              <div className="bg-card/80 rounded-xl border p-5 shadow-sm">
+                <div className="text-primary mb-2 flex items-center gap-2 font-medium">
+                  <Cpu className="h-4 w-4" />
+                  <h3>NVIDIA NIM &amp; Dynamo Core</h3>
+                </div>
+                <p className="text-muted-foreground text-sm">
+                  Live <code>/v1/models</code> discovery, role routing, fallback chains,
+                  and collapsible <code>&lt;think&gt;</code> token streaming.
                 </p>
               </div>
-              <div className="rounded-xl border bg-white/80 p-5 shadow-sm dark:bg-slate-900/60">
-                <h3 className="font-medium">Nova Embeddings RAG</h3>
-                <p className="text-muted-foreground mt-2 text-sm">
-                  Nova Multimodal Embeddings with S3 and local document ingestion.
+              <div className="bg-card/80 rounded-xl border p-5 shadow-sm">
+                <div className="text-primary mb-2 flex items-center gap-2 font-medium">
+                  <Database className="h-4 w-4" />
+                  <h3>Hybrid Knowledge + Reranking</h3>
+                </div>
+                <p className="text-muted-foreground text-sm">
+                  Combine NVIDIA Nemotron Embeddings, NVIDIARerank, Meilisearch BM25,
+                  and S3/MinIO object buckets.
                 </p>
               </div>
-              <div className="rounded-xl border bg-white/80 p-5 shadow-sm dark:bg-slate-900/60">
-                <h3 className="font-medium">Nova Act Automation</h3>
-                <p className="text-muted-foreground mt-2 text-sm">
-                  Browser workflow automation powered by Amazon Nova Act.
+              <div className="bg-card/80 rounded-xl border p-5 shadow-sm">
+                <div className="text-primary mb-2 flex items-center gap-2 font-medium">
+                  <Layers className="h-4 w-4" />
+                  <h3>Multi-Provider Freedom</h3>
+                </div>
+                <p className="text-muted-foreground text-sm">
+                  Switch seamlessly between Hosted NIM, self-hosted vLLM/SGLang/Ollama,
+                  OpenRouter, OpenAI, and Anthropic.
                 </p>
               </div>
-              <div className="rounded-xl border bg-white/80 p-5 shadow-sm dark:bg-slate-900/60">
-                <h3 className="font-medium">AWS-Native Platform</h3>
-                <p className="text-muted-foreground mt-2 text-sm">
-                  Bedrock models, S3 knowledge, and enterprise-grade agent management.
+              <div className="bg-card/80 rounded-xl border p-5 shadow-sm">
+                <div className="text-primary mb-2 flex items-center gap-2 font-medium">
+                  <ShieldCheck className="h-4 w-4" />
+                  <h3>Guardrails &amp; MCP Ecosystem</h3>
+                </div>
+                <p className="text-muted-foreground text-sm">
+                  Real-time PII/secret protection, Playwright browser automation, and
+                  streamable HTTP MCP servers.
                 </p>
               </div>
             </div>
           </div>
 
           <div className="space-y-4">
-            <div className="rounded-xl border bg-white/80 p-6 shadow-sm dark:bg-slate-900/70">
-              <h3 className="text-lg font-semibold">Join Newsletter</h3>
+            <div className="bg-card/85 rounded-xl border p-6 shadow-sm">
+              <h3 className="text-lg font-semibold">Workspace Sign In</h3>
               <p className="text-muted-foreground mt-1 text-sm">
-                Get release notes and product updates.
+                Verify runtime services and open your agent workspace.
               </p>
-              <form onSubmit={handleNewsletter} className="mt-4 flex flex-col gap-3">
-                <input
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  type="email"
-                  placeholder="you@example.com"
-                  className="bg-background w-full rounded-md border px-3 py-2 text-sm outline-none"
-                />
-                <button
-                  type="submit"
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-4 py-2 text-sm font-medium"
-                >
-                  Subscribe
-                </button>
-              </form>
-              {newsletterDone && (
-                <p className="mt-3 text-xs text-green-600 dark:text-green-400">
-                  Thanks. You are subscribed.
-                </p>
-              )}
-            </div>
-
-            <div className="rounded-xl border bg-white/80 p-6 shadow-sm dark:bg-slate-900/70">
-              <h3 className="text-lg font-semibold">Mock Login</h3>
-              <p className="text-muted-foreground mt-1 text-sm">
-                Sign in to start runtime checks and enter the dashboard.
-              </p>
-              <form onSubmit={handleMockLogin} className="mt-4 flex flex-col gap-3">
+              <form onSubmit={handleLogin} className="mt-4 flex flex-col gap-3">
                 <input
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   type="text"
                   placeholder="Username"
-                  className="bg-background w-full rounded-md border px-3 py-2 text-sm outline-none"
+                  className="bg-background w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2"
                 />
                 <input
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   type="password"
                   placeholder="Password"
+                  className="bg-background w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2"
+                />
+                <button
+                  type="submit"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-4 py-2 text-sm font-medium transition-colors"
+                >
+                  Sign In to nimAgents
+                </button>
+                <button
+                  type="button"
+                  onClick={handleQuickDemoAccess}
+                  className="hover:bg-muted rounded-md border px-4 py-2 text-xs font-medium transition-colors"
+                >
+                  Continue with Demo Workspace (demo / demo123)
+                </button>
+              </form>
+              {authError && (
+                <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+                  {authError}
+                </p>
+              )}
+            </div>
+
+            <div className="bg-card/85 rounded-xl border p-6 shadow-sm">
+              <h3 className="text-base font-semibold">Release Updates</h3>
+              <p className="text-muted-foreground mt-1 text-xs">
+                Follow new NIM model presets, memory modules, and runtime updates.
+              </p>
+              <form onSubmit={handleNewsletter} className="mt-3 flex flex-col gap-2.5">
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  type="email"
+                  placeholder="you@organization.org"
                   className="bg-background w-full rounded-md border px-3 py-2 text-sm outline-none"
                 />
                 <button
                   type="submit"
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-4 py-2 text-sm font-medium"
+                  className="bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md px-4 py-2 text-xs font-medium"
                 >
-                  Continue
+                  Subscribe
                 </button>
               </form>
-              <p className="text-muted-foreground mt-3 text-xs">
-                Demo credentials: <strong>demo</strong> / <strong>demo123</strong>
-              </p>
-              {authError && (
-                <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-                  {authError}
+              {newsletterDone && (
+                <p className="mt-2.5 text-xs text-emerald-600 dark:text-emerald-400">
+                  Subscribed to nimAgents release notes.
                 </p>
               )}
             </div>

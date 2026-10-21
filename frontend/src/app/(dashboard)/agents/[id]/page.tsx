@@ -6,8 +6,7 @@ import { AgentConfigProvider, type AgentConfig } from "@/providers/AgentConfig";
 import { AgentBuilder } from "@/components/agent-builder";
 import { createClient } from "@/providers/client";
 import { getApiKey } from "@/lib/api-key";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:2024";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 
 export default function EditAgentPage() {
   const params = useParams();
@@ -19,7 +18,7 @@ export default function EditAgentPage() {
   useEffect(() => {
     (async () => {
       try {
-        const client = createClient(API_URL, getApiKey() ?? undefined);
+        const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
         const assistant = await client.assistants.get(assistantId);
         const cfg = (assistant.config?.configurable ?? {}) as any;
         setInitialConfig({

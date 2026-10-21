@@ -1,30 +1,34 @@
-"""Lexical RAG endpoints — Meilisearch-backed keyword/BM25 search."""
+"""Lexical RAG endpoints — non-blocking Meilisearch BM25 indexing and search."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from api.db import get_db
-from api.utils.doc_loader import load_documents, ALLOWED_EXTENSIONS, MAX_FILE_SIZE
+from api.utils.doc_loader import ALLOWED_EXTENSIONS, MAX_FILE_SIZE, load_documents
 
-logger = logging.getLogger("novagrid.api.lexical_rag")
+logger = logging.getLogger("nimagents.api.lexical_rag")
 router = APIRouter(prefix="/api/lexical-rag", tags=["lexical-rag"])
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "lexical_rag"
-MEILI_URL = os.getenv("MEILI_URL", "http://172.30.6.3:7700")
+MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
+MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY") or None
 
 
 def _get_meili_client():
     import meilisearch
-    return meilisearch.Client(MEILI_URL)
+
+    return meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
 
 
 class LexicalQueryRequest(BaseModel):
@@ -52,7 +56,7 @@ async def upload_file(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
     content = await file.read()
@@ -61,13 +65,13 @@ async def upload_file(
 
     source_id = str(uuid.uuid4())
     short_id = source_id.replace("-", "")[:12]
-    meili_index = f"lexrag_{short_id}"
+    meili_index = f"nimrag_{short_id}"
 
     source_dir = DATA_DIR / source_id
     source_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = source_dir / (file.filename or "upload.bin")
-    file_path.write_bytes(content)
+    await asyncio.to_thread(file_path.write_bytes, content)
 
     with get_db() as conn:
         conn.execute(
@@ -80,7 +84,7 @@ async def upload_file(
         conn.commit()
 
     try:
-        doc_count = _index_into_meilisearch(
+        doc_count = await _index_into_meilisearch_async(
             str(file_path), meili_index, chunk_size, chunk_overlap
         )
         with get_db() as conn:
@@ -107,7 +111,7 @@ async def upload_file(
 
 
 @router.delete("/{source_id}")
-def delete_source(source_id: str):
+async def delete_source(source_id: str):
     with get_db() as conn:
         row = conn.execute(
             "SELECT id, meili_index FROM lexical_rag_sources WHERE id=?",
@@ -121,19 +125,19 @@ def delete_source(source_id: str):
 
     try:
         client = _get_meili_client()
-        client.delete_index(meili_index)
+        await asyncio.to_thread(client.delete_index, meili_index)
     except Exception:
         logger.warning("Failed to delete Meilisearch index %s", meili_index)
 
     source_dir = DATA_DIR / source_id
     if source_dir.exists():
-        shutil.rmtree(source_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, source_dir, True)
 
     return {"ok": True}
 
 
 @router.post("/{source_id}/query")
-def query_source(source_id: str, body: LexicalQueryRequest):
+async def query_source(source_id: str, body: LexicalQueryRequest):
     with get_db() as conn:
         row = conn.execute(
             "SELECT * FROM lexical_rag_sources WHERE id=?", (source_id,)
@@ -145,7 +149,7 @@ def query_source(source_id: str, body: LexicalQueryRequest):
 
     client = _get_meili_client()
     index = client.index(row["meili_index"])
-    results = index.search(body.query, {"limit": body.k})
+    results = await asyncio.to_thread(index.search, body.query, {"limit": body.k})
 
     return {
         "results": [
@@ -158,12 +162,7 @@ def query_source(source_id: str, body: LexicalQueryRequest):
     }
 
 
-def _index_into_meilisearch(
-    file_path: str,
-    meili_index: str,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> int:
+def _prepare_chunks(file_path: str, chunk_size: int, chunk_overlap: int) -> list[dict]:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     docs = load_documents(file_path)
@@ -172,43 +171,57 @@ def _index_into_meilisearch(
         chunk_overlap=chunk_overlap,
     )
     chunks = splitter.split_documents(docs)
-    if not chunks:
+    documents = []
+    for i, chunk in enumerate(chunks):
+        meta = chunk.metadata or {}
+        documents.append(
+            {
+                "id": str(i),
+                "chunk_id": i,
+                "content": chunk.page_content,
+                "metadata": json.dumps(meta) if isinstance(meta, dict) else str(meta),
+            }
+        )
+    return documents
+
+
+async def _index_into_meilisearch_async(
+    file_path: str,
+    meili_index: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> int:
+    documents = await asyncio.to_thread(
+        _prepare_chunks, file_path, chunk_size, chunk_overlap
+    )
+    if not documents:
         return 0
 
     client = _get_meili_client()
     index = client.index(meili_index)
 
-    index.update_searchable_attributes(["content"])
-    index.update_displayed_attributes(["content", "metadata", "chunk_id"])
-
-    documents = []
-    for i, chunk in enumerate(chunks):
-        meta = chunk.metadata or {}
-        documents.append({
-            "id": str(i),
-            "chunk_id": i,
-            "content": chunk.page_content,
-            "metadata": json.dumps(meta) if isinstance(meta, dict) else str(meta),
-        })
+    await asyncio.to_thread(index.update_searchable_attributes, ["content"])
+    await asyncio.to_thread(
+        index.update_displayed_attributes, ["content", "metadata", "chunk_id"]
+    )
 
     batch_size = 500
     for start in range(0, len(documents), batch_size):
         batch = documents[start : start + batch_size]
-        task = index.add_documents(batch, primary_key="id")
-        _wait_for_task(client, task.task_uid)
+        task = await asyncio.to_thread(index.add_documents, batch, "id")
+        await _wait_for_task_async(client, task.task_uid)
 
-    return len(chunks)
+    return len(documents)
 
 
-def _wait_for_task(client, task_uid: int, timeout_ms: int = 30000):
-    """Poll Meilisearch until task completes or fails."""
-    import time
-    deadline = time.time() + timeout_ms / 1000
-    while time.time() < deadline:
-        task = client.get_task(task_uid)
+async def _wait_for_task_async(client, task_uid: int, timeout_ms: int = 30000):
+    """Non-blocking async poll for Meilisearch task completion (never blocks asyncio loop)."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        task = await asyncio.to_thread(client.get_task, task_uid)
         if task.status in ("succeeded", "failed"):
             if task.status == "failed":
                 raise RuntimeError(f"Meilisearch task {task_uid} failed: {task.error}")
             return task
-        time.sleep(0.3)
+        await asyncio.sleep(0.25)
     raise TimeoutError(f"Meilisearch task {task_uid} timed out after {timeout_ms}ms")

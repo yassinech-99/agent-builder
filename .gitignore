@@ -5,6 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv
@@ -25,6 +27,7 @@ data/*.db-*
 *.db-wal
 *.db-shm
 data/local_rag/
+data/lexical_rag/
 data/
 
 # Node / Next.js
@@ -35,18 +38,16 @@ frontend/out/
 frontend/.turbo/
 frontend/.env
 frontend/.env.*
-
-# Local vendor / experimental repos
-scoutsuite-aws-mcp/
+frontend/package-lock.json
 
 # Logs / OS
 *.log
 .DS_Store
 
-# Hackathon notes / local markdown (keep README.md tracked)
+# Local scratch markdown (keep README.md and plan.md tracked)
 *.md
 !README.md
+!plan.md
 
-# Local scripts / scratch
-test_*.py
+# Runtime workspace directory
 workspace/

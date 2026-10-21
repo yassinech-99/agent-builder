@@ -1,52 +1,72 @@
-"""SQLite database setup with context-managed connections."""
+"""Database setup and connection helpers for nimAgents."""
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "gridagents.db"
+DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "nimagents.db"
+
+
+def get_db_path() -> Path:
+    custom = os.getenv("NIMAGENTS_DB_PATH")
+    if custom:
+        return Path(custom)
+    return DEFAULT_DB_PATH
+
+
+def mask_secret(value: str | None) -> str:
+    """Return a non-reversible masked representation of an API key or secret."""
+    if not value:
+        return ""
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    if len(stripped) <= 8:
+        return "••••••••"
+    prefix = stripped[:6] if "-" in stripped[:7] else stripped[:4]
+    return f"{prefix}••••••••{stripped[-4:]}"
+
 
 CREATE_MODELS = """
 CREATE TABLE IF NOT EXISTS models (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    provider TEXT NOT NULL DEFAULT 'openai',
+    provider TEXT NOT NULL DEFAULT 'nvidia_nim',
     base_url TEXT DEFAULT '',
     api_key TEXT DEFAULT '',
     model_name TEXT NOT NULL,
     temperature REAL DEFAULT 0.7,
     max_tokens INTEGER,
     is_default BOOLEAN DEFAULT 0,
-    aws_region TEXT DEFAULT '',
-    aws_secret_key TEXT DEFAULT '',
+    role TEXT DEFAULT 'primary_chat',
+    fallback_model_id TEXT DEFAULT '',
+    context_window INTEGER DEFAULT 131072,
+    supports_thinking BOOLEAN DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
 
 _MIGRATE_MODELS_COLUMNS = [
-    ("aws_region", "TEXT DEFAULT ''"),
-    ("aws_secret_key", "TEXT DEFAULT ''"),
+    ("role", "TEXT DEFAULT 'primary_chat'"),
+    ("fallback_model_id", "TEXT DEFAULT ''"),
+    ("context_window", "INTEGER DEFAULT 131072"),
+    ("supports_thinking", "BOOLEAN DEFAULT 0"),
 ]
 
-_MIGRATE_RAG_COLUMNS = [
-    ("knowledge_base_id", "TEXT DEFAULT ''"),
-    ("description", "TEXT DEFAULT ''"),
-    ("region", "TEXT DEFAULT ''"),
-    ("s3_bucket", "TEXT DEFAULT ''"),
-    ("s3_prefix", "TEXT DEFAULT ''"),
-]
-
-CREATE_S3_CONNECTIONS = """
-CREATE TABLE IF NOT EXISTS s3_connections (
+CREATE_STORAGE_CONNECTIONS = """
+CREATE TABLE IF NOT EXISTS storage_connections (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    endpoint_url TEXT NOT NULL DEFAULT 'http://localhost:9000',
     bucket_name TEXT NOT NULL,
-    region TEXT DEFAULT '',
-    access_key_id TEXT DEFAULT '',
-    secret_access_key TEXT DEFAULT '',
+    region TEXT DEFAULT 'us-east-1',
+    access_key TEXT DEFAULT '',
+    secret_key TEXT DEFAULT '',
+    secure BOOLEAN DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -82,8 +102,12 @@ CREATE TABLE IF NOT EXISTS rag_sources (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT DEFAULT '',
-    knowledge_base_id TEXT NOT NULL DEFAULT '',
-    region TEXT DEFAULT '',
+    endpoint_url TEXT NOT NULL DEFAULT 'http://localhost:8081/v1',
+    collection_name TEXT NOT NULL DEFAULT 'default',
+    api_key TEXT DEFAULT '',
+    ranking_model TEXT DEFAULT 'nvidia/llama-nemotron-rerank-1b-v2',
+    storage_bucket TEXT DEFAULT '',
+    storage_prefix TEXT DEFAULT '',
     status TEXT DEFAULT 'ready',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -98,11 +122,11 @@ CREATE TABLE IF NOT EXISTS local_rag_sources (
     chunk_size INTEGER DEFAULT 1000,
     chunk_overlap INTEGER DEFAULT 200,
     index_path TEXT DEFAULT '',
-    embedding_model TEXT DEFAULT 'nova-multimodal',
+    embedding_model TEXT DEFAULT 'nvidia/llama-nemotron-embed-1b-v2',
     status TEXT DEFAULT 'pending',
     doc_count INTEGER DEFAULT 0,
-    s3_bucket TEXT DEFAULT '',
-    s3_prefix TEXT DEFAULT '',
+    storage_bucket TEXT DEFAULT '',
+    storage_prefix TEXT DEFAULT '',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -123,14 +147,21 @@ CREATE TABLE IF NOT EXISTS lexical_rag_sources (
 """
 
 
+def _open_connection() -> sqlite3.Connection:
+    db_path = get_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
 @contextmanager
 def get_db() -> Generator[sqlite3.Connection, None, None]:
     """Yield a SQLite connection and guarantee it is closed on exit."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = _open_connection()
     try:
         yield conn
     finally:
@@ -138,11 +169,8 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 
 
 def get_db_raw() -> sqlite3.Connection:
-    """Return a raw connection (for code that cannot use context managers, e.g. agent/model.py)."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Return a raw SQLite connection for callers managing lifecycle directly."""
+    return _open_connection()
 
 
 def init_db() -> None:
@@ -151,20 +179,15 @@ def init_db() -> None:
         conn.execute(CREATE_RAG_SOURCES)
         conn.execute(CREATE_LOCAL_RAG_SOURCES)
         conn.execute(CREATE_LEXICAL_RAG_SOURCES)
-        conn.execute(CREATE_S3_CONNECTIONS)
+        conn.execute(CREATE_STORAGE_CONNECTIONS)
         conn.execute(CREATE_GUARDRAIL_RULES)
         conn.execute(CREATE_GUARDRAIL_EVENTS)
-        _seed_default_guardrail_rules(conn)
         for col_name, col_type in _MIGRATE_MODELS_COLUMNS:
             try:
                 conn.execute(f"ALTER TABLE models ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass
-        for col_name, col_type in _MIGRATE_RAG_COLUMNS:
-            try:
-                conn.execute(f"ALTER TABLE rag_sources ADD COLUMN {col_name} {col_type}")
-            except Exception:
-                pass
+        _seed_default_guardrail_rules(conn)
         conn.commit()
 
 
@@ -172,8 +195,8 @@ _DEFAULT_GUARDRAIL_RULES = [
     ("pii-email", "Email Addresses", "pii", r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", "redact"),
     ("pii-phone", "Phone Numbers", "pii", r"\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b", "warn"),
     ("pii-ssn", "Social Security Numbers", "pii", r"\b\d{3}-\d{2}-\d{4}\b", "block"),
-    ("secrets-aws-key", "AWS Access Keys", "secrets", r"AKIA[0-9A-Z]{16}", "block"),
-    ("secrets-api-key", "Generic API Keys", "secrets", r"(?i)(api[_-]?key|apikey)\s*[:=]\s*\S+", "warn"),
+    ("secrets-nim-key", "NVIDIA NIM API Keys", "secrets", r"nvapi-[A-Za-z0-9_-]{20,}", "block"),
+    ("secrets-api-key", "Generic API & Bearer Keys", "secrets", r"(?i)(api[_-]?key|apikey|secret[_-]?key|bearer)\s*[:=]\s*\S+", "warn"),
     ("harmful-prompt-injection", "Prompt Injection", "harmful", r"(?i)(ignore\s+(all\s+)?previous|disregard\s+(all\s+)?instructions)", "block"),
 ]
 

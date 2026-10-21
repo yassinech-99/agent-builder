@@ -75,8 +75,8 @@ def human_input(question: str) -> str:
 
 def _make_tavily(cfg: dict[str, str]):
     from langchain_tavily import TavilySearch
-    os.environ.setdefault("TAVILY_API_KEY", cfg.get("TAVILY_API_KEY", ""))
-    return TavilySearch(max_results=5)
+    key = cfg.get("TAVILY_API_KEY") or os.getenv("TAVILY_API_KEY", "")
+    return TavilySearch(max_results=5, tavily_api_key=key or None)
 
 
 def _make_duckduckgo(_cfg: dict[str, str]):
@@ -87,7 +87,7 @@ def _make_duckduckgo(_cfg: dict[str, str]):
 def _make_brave(cfg: dict[str, str]):
     from langchain_community.tools import BraveSearch
     return BraveSearch.from_api_key(
-        api_key=cfg.get("BRAVE_SEARCH_API_KEY", ""),
+        api_key=cfg.get("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_SEARCH_API_KEY", ""),
         search_kwargs={"count": 5},
     )
 
@@ -95,8 +95,8 @@ def _make_brave(cfg: dict[str, str]):
 def _make_google_serper(cfg: dict[str, str]):
     from langchain_community.utilities import GoogleSerperAPIWrapper
     from langchain_core.tools import Tool
-    os.environ.setdefault("SERPER_API_KEY", cfg.get("SERPER_API_KEY", ""))
-    wrapper = GoogleSerperAPIWrapper()
+    key = cfg.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY", "")
+    wrapper = GoogleSerperAPIWrapper(serper_api_key=key)
     return Tool(name="google_serper", func=wrapper.run,
                 description="Search Google via Serper API.")
 
@@ -104,9 +104,10 @@ def _make_google_serper(cfg: dict[str, str]):
 def _make_google_search(cfg: dict[str, str]):
     from langchain_community.utilities import GoogleSearchAPIWrapper
     from langchain_core.tools import Tool
-    os.environ.setdefault("GOOGLE_API_KEY", cfg.get("GOOGLE_API_KEY", ""))
-    os.environ.setdefault("GOOGLE_CSE_ID", cfg.get("GOOGLE_CSE_ID", ""))
-    wrapper = GoogleSearchAPIWrapper()
+    wrapper = GoogleSearchAPIWrapper(
+        google_api_key=cfg.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY", ""),
+        google_cse_id=cfg.get("GOOGLE_CSE_ID") or os.getenv("GOOGLE_CSE_ID", ""),
+    )
     return Tool(name="google_search", func=wrapper.run,
                 description="Search Google. Returns top results.")
 
@@ -114,8 +115,9 @@ def _make_google_search(cfg: dict[str, str]):
 def _make_serpapi(cfg: dict[str, str]):
     from langchain_community.utilities import SerpAPIWrapper
     from langchain_core.tools import Tool
-    os.environ.setdefault("SERPAPI_API_KEY", cfg.get("SERPAPI_API_KEY", ""))
-    wrapper = SerpAPIWrapper()
+    wrapper = SerpAPIWrapper(
+        serpapi_api_key=cfg.get("SERPAPI_API_KEY") or os.getenv("SERPAPI_API_KEY", ""),
+    )
     return Tool(name="serpapi", func=wrapper.run,
                 description="Search Google via SerpAPI. Returns rich snippets.")
 
@@ -162,8 +164,9 @@ def _make_semanticscholar(_cfg: dict[str, str]):
 def _make_wolfram(cfg: dict[str, str]):
     from langchain_community.utilities import WolframAlphaAPIWrapper
     from langchain_core.tools import Tool
-    os.environ.setdefault("WOLFRAM_ALPHA_APPID", cfg.get("WOLFRAM_ALPHA_APPID", ""))
-    wrapper = WolframAlphaAPIWrapper()
+    wrapper = WolframAlphaAPIWrapper(
+        wolfram_alpha_appid=cfg.get("WOLFRAM_ALPHA_APPID") or os.getenv("WOLFRAM_ALPHA_APPID", ""),
+    )
     return Tool(name="wolfram_alpha", func=wrapper.run,
                 description="Query Wolfram Alpha for computational and factual answers.")
 
@@ -185,7 +188,7 @@ def _make_shell(_cfg: dict[str, str]):
 
 def _make_e2b_sandbox(cfg: dict[str, str]):
     from langchain_community.tools.e2b_data_analysis.tool import E2BDataAnalysisTool
-    return E2BDataAnalysisTool(api_key=cfg.get("E2B_API_KEY", ""))
+    return E2BDataAnalysisTool(api_key=cfg.get("E2B_API_KEY") or os.getenv("E2B_API_KEY", ""))
 
 
 # ── Web / HTTP ────────────────────────────────────────────────────────────
@@ -224,16 +227,17 @@ def _make_requests_patch(_cfg: dict[str, str]):
 
 def _make_gmail_toolkit(cfg: dict[str, str]):
     from langchain_community.agent_toolkits import GmailToolkit
-    os.environ.setdefault("GMAIL_CREDENTIALS_FILE", cfg.get("GMAIL_CREDENTIALS_FILE", "credentials.json"))
+    if cfg.get("GMAIL_CREDENTIALS_FILE"):
+        os.environ.setdefault("GMAIL_CREDENTIALS_FILE", cfg["GMAIL_CREDENTIALS_FILE"])
     toolkit = GmailToolkit()
     return toolkit.get_tools()
 
 
 def _make_o365_toolkit(cfg: dict[str, str]):
     from langchain_community.agent_toolkits import O365Toolkit
-    os.environ.setdefault("O365_CLIENT_ID", cfg.get("O365_CLIENT_ID", ""))
-    os.environ.setdefault("O365_CLIENT_SECRET", cfg.get("O365_CLIENT_SECRET", ""))
-    os.environ.setdefault("O365_TENANT_ID", cfg.get("O365_TENANT_ID", ""))
+    for k in ("O365_CLIENT_ID", "O365_CLIENT_SECRET", "O365_TENANT_ID"):
+        if cfg.get(k):
+            os.environ.setdefault(k, cfg[k])
     toolkit = O365Toolkit()
     return toolkit.get_tools()
 
@@ -242,31 +246,12 @@ def _make_o365_toolkit(cfg: dict[str, str]):
 
 def _make_file_management(_cfg: dict[str, str]):
     from langchain_community.agent_toolkits import FileManagementToolkit
+    os.makedirs("./workspace", exist_ok=True)
     toolkit = FileManagementToolkit(root_dir="./workspace")
     return toolkit.get_tools()
 
 
 # ── Browser ───────────────────────────────────────────────────────────────
-
-def _make_nova_act_browser(cfg: dict[str, str]):
-    from nova_act import NovaAct
-
-    api_key = cfg.get("NOVA_ACT_API_KEY") or os.getenv("NOVA_ACT_API_KEY", "")
-
-    @tool
-    def nova_act_browse(url: str, instruction: str) -> str:
-        """Automate browser workflows using Amazon Nova Act.
-        Navigate to a URL and execute a natural language instruction
-        such as filling forms, clicking buttons, or extracting data."""
-        try:
-            with NovaAct(starting_page=url, nova_act_api_key=api_key) as nova:
-                result = nova.act(instruction)
-                return str(result.response) if result.response else "Action completed."
-        except Exception as exc:
-            return f"Nova Act error: {exc}"
-
-    return nova_act_browse
-
 
 def _make_playwright_toolkit(_cfg: dict[str, str]):
     from langchain_community.agent_toolkits import PlayWrightBrowserToolkit
@@ -281,10 +266,11 @@ def _make_playwright_toolkit(_cfg: dict[str, str]):
 def _make_jira_toolkit(cfg: dict[str, str]):
     from langchain_community.agent_toolkits.jira.toolkit import JiraToolkit
     from langchain_community.utilities.jira import JiraAPIWrapper
-    os.environ.setdefault("JIRA_API_TOKEN", cfg.get("JIRA_API_TOKEN", ""))
-    os.environ.setdefault("JIRA_USERNAME", cfg.get("JIRA_USERNAME", ""))
-    os.environ.setdefault("JIRA_INSTANCE_URL", cfg.get("JIRA_INSTANCE_URL", ""))
-    wrapper = JiraAPIWrapper()
+    wrapper = JiraAPIWrapper(
+        jira_api_token=cfg.get("JIRA_API_TOKEN") or os.getenv("JIRA_API_TOKEN", ""),
+        jira_username=cfg.get("JIRA_USERNAME") or os.getenv("JIRA_USERNAME", ""),
+        jira_instance_url=cfg.get("JIRA_INSTANCE_URL") or os.getenv("JIRA_INSTANCE_URL", ""),
+    )
     toolkit = JiraToolkit.from_jira_api_wrapper(wrapper)
     return toolkit.get_tools()
 
@@ -292,10 +278,11 @@ def _make_jira_toolkit(cfg: dict[str, str]):
 def _make_github_toolkit(cfg: dict[str, str]):
     from langchain_community.agent_toolkits.github.toolkit import GitHubToolkit
     from langchain_community.utilities.github import GitHubAPIWrapper
-    os.environ.setdefault("GITHUB_APP_ID", cfg.get("GITHUB_APP_ID", ""))
-    os.environ.setdefault("GITHUB_APP_PRIVATE_KEY", cfg.get("GITHUB_APP_PRIVATE_KEY", ""))
-    os.environ.setdefault("GITHUB_REPOSITORY", cfg.get("GITHUB_REPOSITORY", ""))
-    wrapper = GitHubAPIWrapper()
+    wrapper = GitHubAPIWrapper(
+        github_app_id=cfg.get("GITHUB_APP_ID") or os.getenv("GITHUB_APP_ID", ""),
+        github_app_private_key=cfg.get("GITHUB_APP_PRIVATE_KEY") or os.getenv("GITHUB_APP_PRIVATE_KEY", ""),
+        github_repository=cfg.get("GITHUB_REPOSITORY") or os.getenv("GITHUB_REPOSITORY", ""),
+    )
     toolkit = GitHubToolkit.from_github_api_wrapper(wrapper)
     return toolkit.get_tools()
 
@@ -305,15 +292,17 @@ def _make_github_toolkit(cfg: dict[str, str]):
 def _make_dalle(cfg: dict[str, str]):
     from langchain_community.utilities.dalle_image_generator import DallEAPIWrapper
     from langchain_core.tools import Tool
-    os.environ.setdefault("OPENAI_API_KEY", cfg.get("OPENAI_API_KEY", ""))
-    wrapper = DallEAPIWrapper(model="dall-e-3")
+    wrapper = DallEAPIWrapper(
+        model="dall-e-3",
+        openai_api_key=cfg.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", ""),
+    )
     return Tool(name="dall_e", func=wrapper.run,
                 description="Generate images using DALL-E 3. Provide a text description.")
 
 
 def _make_openai_image(cfg: dict[str, str]):
     """Factory for an OpenAI gpt-image-1 image generation tool."""
-    from openai import OpenAI  # Lazy import to avoid hard dependency at module import time
+    from openai import OpenAI
 
     api_key = cfg.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
     client = OpenAI(api_key=api_key) if api_key else OpenAI()
@@ -327,9 +316,8 @@ def _make_openai_image(cfg: dict[str, str]):
                 prompt=prompt,
                 size="1024x1024",
             )
-            # The v1 OpenAI client returns a data array; first element holds the image
             return response.data[0].url  # type: ignore[union-attr]
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover
             return f"Image generation failed: {exc}"
 
     return generate_image
@@ -340,14 +328,15 @@ def _make_openai_image(cfg: dict[str, str]):
 def _make_openweather(cfg: dict[str, str]):
     from langchain_community.utilities import OpenWeatherMapAPIWrapper
     from langchain_core.tools import Tool
-    os.environ.setdefault("OPENWEATHERMAP_API_KEY", cfg.get("OPENWEATHERMAP_API_KEY", ""))
-    wrapper = OpenWeatherMapAPIWrapper()
+    wrapper = OpenWeatherMapAPIWrapper(
+        openweathermap_api_key=cfg.get("OPENWEATHERMAP_API_KEY") or os.getenv("OPENWEATHERMAP_API_KEY", ""),
+    )
     return Tool(name="open_weather", func=wrapper.run,
                 description="Get current weather data for a city.")
 
 
 # ---------------------------------------------------------------------------
-# The master catalog – ~30 tools & toolkits
+# Master prebuilt tool catalog
 # ---------------------------------------------------------------------------
 
 TOOL_CATALOG: dict[str, dict[str, Any]] = {
@@ -573,18 +562,9 @@ TOOL_CATALOG: dict[str, dict[str, Any]] = {
     },
 
     # ── Browser Automation ────────────────────────────────────────────────
-    "nova_act_browser": {
-        "name": "Nova Act Browser",
-        "description": "Automate browser workflows using Amazon Nova Act. Navigate pages, fill forms, extract data with natural language instructions.",
-        "category": "browser",
-        "required_config": [
-            {"key": "NOVA_ACT_API_KEY", "label": "Nova Act API Key", "type": "password", "hint": "Get from nova.amazon.com/act"},
-        ],
-        "factory": _make_nova_act_browser,
-    },
     "playwright_browser": {
         "name": "Playwright Browser Toolkit",
-        "description": "Automate a browser — navigate, click, fill forms, extract text.",
+        "description": "Automate a headless Chromium browser — navigate pages, click elements, fill forms, and extract structured text.",
         "category": "browser",
         "required_config": [],
         "is_toolkit": True,
@@ -657,7 +637,7 @@ TOOL_CATALOG: dict[str, dict[str, Any]] = {
         "description": "Full Meilisearch access via MCP — search with filters/facets, manage documents and indexes, monitor health. Powers 'chat with your data'.",
         "category": "data",
         "required_config": [
-            {"key": "MEILI_HTTP_ADDR", "label": "Meilisearch URL", "type": "text", "hint": "http://172.30.6.3:7700"},
+            {"key": "MEILI_HTTP_ADDR", "label": "Meilisearch URL", "type": "text", "hint": "http://localhost:7700"},
         ],
         "is_toolkit": True,
         "factory": lambda _cfg: [],
@@ -696,11 +676,7 @@ def get_tools_by_ids(
     tool_ids: list[str],
     tool_configs: dict[str, dict[str, str]] | None = None,
 ) -> list[Callable[..., Any]]:
-    """Instantiate and return tools for the given catalog IDs.
-
-    Handles both single-tool entries and toolkit entries (is_toolkit=True)
-    that return a list of tools from their factory.
-    """
+    """Instantiate and return tools for the given catalog IDs."""
     configs = tool_configs or {}
     tools: list[Callable[..., Any]] = []
     for tid in tool_ids:

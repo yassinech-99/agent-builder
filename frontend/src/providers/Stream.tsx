@@ -3,6 +3,7 @@ import React, {
   useContext,
   ReactNode,
   useEffect,
+  useState,
 } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import { type Message } from "@langchain/langgraph-sdk";
@@ -15,6 +16,7 @@ import {
 } from "@langchain/langgraph-sdk/react-ui";
 import { useQueryState } from "nuqs";
 import { getApiKey } from "@/lib/api-key";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 import { useThreads } from "./Thread";
 import { toast } from "sonner";
 
@@ -35,7 +37,7 @@ const useTypedStream = useStream<
 type StreamContextType = ReturnType<typeof useTypedStream>;
 const StreamContext = createContext<StreamContextType | undefined>(undefined);
 
-async function sleep(ms = 4000) {
+async function sleep(ms = 2500) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -51,7 +53,6 @@ async function checkGraphStatus(
         },
       }),
     });
-
     return res.ok;
   } catch (e) {
     console.error(e);
@@ -95,14 +96,14 @@ const StreamSession = ({
   useEffect(() => {
     checkGraphStatus(apiUrl, apiKey).then((ok) => {
       if (!ok) {
-        toast.error("Failed to connect to NovaGrid server", {
+        toast.error("Failed to connect to nimAgents runtime", {
           description: () => (
             <p>
-              Please ensure your graph is running at <code>{apiUrl}</code> and
-              your API key is correctly set (if connecting to a deployed graph).
+              Verify the LangGraph server is reachable via <code>{apiUrl}</code>{" "}
+              or update endpoints in Settings.
             </p>
           ),
-          duration: 10000,
+          duration: 8000,
           richColors: true,
           closeButton: true,
         });
@@ -117,26 +118,27 @@ const StreamSession = ({
   );
 };
 
-const DEFAULT_API_URL = "http://localhost:2024";
 const DEFAULT_ASSISTANT_ID = "agent";
 
 export const StreamProvider: React.FC<{ children: ReactNode }> = ({
   children,
 }) => {
-  const envApiUrl: string | undefined = process.env.NEXT_PUBLIC_API_URL;
-  const envAssistantId: string | undefined =
-    process.env.NEXT_PUBLIC_ASSISTANT_ID;
+  const envAssistantId = process.env.NEXT_PUBLIC_ASSISTANT_ID;
+  const [resolvedDefaultUrl, setResolvedDefaultUrl] = useState<string>(() =>
+    getRuntimeApiUrl(),
+  );
 
-  const [apiUrl] = useQueryState("apiUrl", {
-    defaultValue: envApiUrl || DEFAULT_API_URL,
-  });
+  useEffect(() => {
+    setResolvedDefaultUrl(getRuntimeApiUrl());
+  }, []);
+
+  const [apiUrl] = useQueryState("apiUrl");
   const [assistantId] = useQueryState("assistantId", {
     defaultValue: envAssistantId || DEFAULT_ASSISTANT_ID,
   });
 
   const apiKey = getApiKey();
-
-  const finalApiUrl = apiUrl || envApiUrl || DEFAULT_API_URL;
+  const finalApiUrl = apiUrl || resolvedDefaultUrl;
   const finalAssistantId = assistantId || envAssistantId || DEFAULT_ASSISTANT_ID;
 
   return (

@@ -156,7 +156,7 @@ export default function ThreadHistory() {
 
   return (
     <>
-      <div className="shadow-inner-right hidden h-screen w-[300px] shrink-0 flex-col items-start justify-start gap-6 border-r-[1px] border-slate-300 lg:flex">
+      <div className="shadow-inner-right bg-background hidden h-screen w-[300px] shrink-0 flex-col items-start justify-start gap-6 border-r lg:flex">
         <div className="flex w-full items-center justify-between px-4 pt-1.5">
           <Button
             className="hover:bg-gray-100"
@@ -189,7 +189,7 @@ export default function ThreadHistory() {
         >
           <SheetContent
             side="left"
-            className="flex lg:hidden"
+            className="bg-background flex lg:hidden"
           >
             <SheetHeader>
               <SheetTitle>Thread History</SheetTitle>

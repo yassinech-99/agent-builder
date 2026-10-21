@@ -8,9 +8,9 @@ export default function VoicePage() {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Voice Agent</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Voice Studio</h1>
           <p className="text-muted-foreground text-sm">
-            Real-time conversational AI powered by Nova 2 Sonic
+            Real-time streaming voice &amp; conversational sessions powered by NVIDIA Riva Speech NIM
           </p>
         </div>
       </div>

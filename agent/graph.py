@@ -1,4 +1,4 @@
-"""LangGraph graph factory that builds a ReAct agent from per-run config.
+"""LangGraph graph factory that builds a nimAgents ReAct agent from per-run config.
 
 Config schema (passed via config["configurable"]):
     agent_name:              str
@@ -6,15 +6,16 @@ Config schema (passed via config["configurable"]):
     enabled_prebuilt_tools:  list[str]
     tool_configs:            dict[str, dict[str, str]]  (per-tool secrets/params)
     mcp_servers:             list[dict]
-    model_id:                str            (optional, falls back to .env)
-    rag_source_ids:          list[str]      (optional, adds Bedrock KB retriever tool)
-    local_rag_source_ids:    list[str]      (optional, adds local FAISS RAG search tool)
-    lexical_rag_source_ids:  list[str]      (optional, adds lexical RAG search tool)
+    model_id:                str            (optional, falls back to DB default / .env)
+    rag_source_ids:          list[str]      (optional, adds NVIDIA NIM RAG retriever tool)
+    local_rag_source_ids:    list[str]      (optional, adds local vector RAG search tool)
+    lexical_rag_source_ids:  list[str]      (optional, adds Meilisearch BM25 search tool)
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -24,27 +25,36 @@ from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 
-from agent.model import get_model
+from agent.model import get_model, sanitize_multimodal_messages
 from agent.tools import get_tools_by_ids
 
-MEILI_URL = os.getenv("MEILI_URL", "http://172.30.6.3:7700")
+logger = logging.getLogger("nimagents.graph")
 
+MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
+MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY") or None
+
+# Byte-stable system prompt prefix to preserve GPU KV cache reuse across turns & users.
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful AI assistant named {agent_name}. "
-    "Current time: {system_time}. "
-    "Use the tools available to you to answer the user's questions."
+    "You are {agent_name}, a helpful and accurate AI assistant powered by nimAgents. "
+    "Use the available tools thoughtfully when needed and cite retrieved knowledge clearly."
 )
 
 
-def _build_system_prompt(raw: str | None, agent_name: str = "NovaGrid Agents") -> str:
+def _build_system_prompt(raw: str | None, agent_name: str = "nimAgents Assistant") -> str:
     template = raw or DEFAULT_SYSTEM_PROMPT
     try:
-        return template.format(
-            system_time=datetime.now(tz=UTC).isoformat(),
-            agent_name=agent_name,
-        )
-    except (KeyError, IndexError):
+        kwargs: dict[str, str] = {"agent_name": agent_name}
+        if "{system_time}" in template:
+            kwargs["system_time"] = datetime.now(tz=UTC).isoformat()
+        return template.format(**kwargs)
+    except (KeyError, IndexError, ValueError):
         return template
+
+
+def _pre_model_sanitize(state: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize multimodal inputs before forwarding messages to any model endpoint."""
+    messages = state.get("messages", [])
+    return {"llm_input_messages": sanitize_multimodal_messages(messages)}
 
 
 def _parse_agent_config(config: RunnableConfig) -> dict[str, Any]:
@@ -58,7 +68,7 @@ def _parse_agent_config(config: RunnableConfig) -> dict[str, Any]:
             pass
 
     return {
-        "agent_name": configurable.get("agent_name", "Agent"),
+        "agent_name": configurable.get("agent_name", "nimAgents Assistant"),
         "system_prompt": configurable.get("system_prompt"),
         "enabled_prebuilt_tools": configurable.get("enabled_prebuilt_tools", []),
         "tool_configs": configurable.get("tool_configs", {}),
@@ -115,16 +125,13 @@ async def _load_mcp_tools(mcp_servers: list[dict[str, Any]]) -> list:
 def _build_rag_tool(rag_source_ids: list[str]):
     @tool
     def rag_search(query: str) -> str:
-        """Search the knowledge base for relevant information. Use this when the user asks about topics that might be in uploaded documents or knowledge bases."""
+        """Search external NVIDIA NIM RAG knowledge collections for relevant documents."""
         try:
-            import boto3
-            from api.db import get_db_raw
+            from api.db import get_db
+            from api.routes.rag import query_nim_rag_row
 
-            all_results = []
-            default_region = os.getenv("AWS_REGION", "us-east-1")
-
-            conn = get_db_raw()
-            try:
+            all_results: list[str] = []
+            with get_db() as conn:
                 for sid in rag_source_ids:
                     row = conn.execute(
                         "SELECT * FROM rag_sources WHERE id=? AND status='ready'",
@@ -133,25 +140,13 @@ def _build_rag_tool(rag_source_ids: list[str]):
                     if not row:
                         continue
                     try:
-                        region = row["region"] or default_region
-                        client = boto3.client(
-                            "bedrock-agent-runtime", region_name=region
-                        )
-                        response = client.retrieve(
-                            knowledgeBaseId=row["knowledge_base_id"],
-                            retrievalQuery={"text": query},
-                            retrievalConfiguration={
-                                "vectorSearchConfiguration": {"numberOfResults": 5}
-                            },
-                        )
-                        for r in response.get("retrievalResults", []):
-                            text = r.get("content", {}).get("text", "")
+                        docs = query_nim_rag_row(dict(row), query=query, k=5)
+                        for item in docs:
+                            text = item.get("page_content", "")
                             if text:
                                 all_results.append(text)
                     except Exception:
                         continue
-            finally:
-                conn.close()
 
             if not all_results:
                 return "No relevant documents found in the knowledge base."
@@ -165,15 +160,13 @@ def _build_rag_tool(rag_source_ids: list[str]):
 def _build_local_rag_tool(local_rag_source_ids: list[str]):
     @tool
     def local_rag_search(query: str) -> str:
-        """Search locally indexed documents using FAISS vector similarity. Use this for questions about uploaded or imported documents."""
+        """Search locally indexed vector documents using semantic embeddings and optional NVIDIA reranking."""
         try:
-            from api.db import get_db_raw
-            from api.routes.local_rag import _get_embeddings
-            from langchain_community.vectorstores import FAISS
+            from api.db import get_db
+            from api.routes.local_rag import search_local_source_row
 
-            all_results = []
-            conn = get_db_raw()
-            try:
+            all_results: list[str] = []
+            with get_db() as conn:
                 for sid in local_rag_source_ids:
                     row = conn.execute(
                         "SELECT * FROM local_rag_sources WHERE id=? AND status='ready'",
@@ -182,19 +175,11 @@ def _build_local_rag_tool(local_rag_source_ids: list[str]):
                     if not row:
                         continue
                     try:
-                        embeddings = _get_embeddings(row["embedding_model"])
-                        store = FAISS.load_local(
-                            row["index_path"],
-                            embeddings,
-                            allow_dangerous_deserialization=True,
-                        )
-                        docs = store.similarity_search(query, k=3)
+                        docs = search_local_source_row(dict(row), query=query, k=4)
                         for d in docs:
-                            all_results.append(d.page_content)
+                            all_results.append(d["page_content"])
                     except Exception:
                         continue
-            finally:
-                conn.close()
 
             if not all_results:
                 return "No relevant documents found in local knowledge base."
@@ -208,16 +193,15 @@ def _build_local_rag_tool(local_rag_source_ids: list[str]):
 def _build_lexical_rag_tool(lexical_rag_source_ids: list[str]):
     @tool
     def lexical_rag_search(query: str) -> str:
-        """Search the knowledge base using keyword/lexical search via Meilisearch. Use this for exact term matching and keyword-based retrieval from uploaded documents."""
+        """Search uploaded documents using Meilisearch BM25 lexical keyword matching."""
         try:
             import meilisearch
-            from api.db import get_db_raw
+            from api.db import get_db
 
-            client = meilisearch.Client(MEILI_URL)
-            all_results = []
+            client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
+            all_results: list[str] = []
 
-            conn = get_db_raw()
-            try:
+            with get_db() as conn:
                 for sid in lexical_rag_source_ids:
                     row = conn.execute(
                         "SELECT * FROM lexical_rag_sources WHERE id=? AND status='ready'",
@@ -232,8 +216,6 @@ def _build_lexical_rag_tool(lexical_rag_source_ids: list[str]):
                             all_results.append(hit.get("content", ""))
                     except Exception:
                         continue
-            finally:
-                conn.close()
 
             if not all_results:
                 return "No relevant documents found via keyword search."
@@ -249,10 +231,10 @@ async def _load_meilisearch_mcp_tools(
 ) -> list:
     """Spawn meilisearch-mcp as a stdio subprocess and return its tools."""
     meili_cfg = tool_configs.get("meilisearch_mcp", {})
-    meili_addr = meili_cfg.get("MEILI_HTTP_ADDR", MEILI_URL)
+    meili_addr = meili_cfg.get("MEILI_HTTP_ADDR") or MEILI_URL
 
     env = {**os.environ, "MEILI_HTTP_ADDR": meili_addr}
-    meili_key = meili_cfg.get("MEILI_MASTER_KEY", "")
+    meili_key = meili_cfg.get("MEILI_MASTER_KEY") or (MEILI_MASTER_KEY or "")
     if meili_key:
         env["MEILI_MASTER_KEY"] = meili_key
 
@@ -269,10 +251,7 @@ async def _load_meilisearch_mcp_tools(
         client = MultiServerMCPClient(server_configs)
         return await client.get_tools()
     except Exception as exc:
-        import logging
-        logging.getLogger("novagrid.graph").warning(
-            "Failed to load meilisearch-mcp tools: %s", exc
-        )
+        logger.warning("Failed to load meilisearch-mcp tools: %s", exc)
         return []
 
 
@@ -280,14 +259,12 @@ def _check_guardrails(text: str, thread_id: str = "", assistant_id: str = "") ->
     """Run text against active guardrail rules. Returns {passed, hits, cleaned_text}."""
     import re as _re
     try:
-        from api.db import get_db_raw
-        conn = get_db_raw()
-        try:
+        from api.db import get_db
+
+        with get_db() as conn:
             rules = conn.execute(
                 "SELECT * FROM guardrail_rules WHERE enabled = 1"
             ).fetchall()
-        finally:
-            conn.close()
     except Exception:
         return {"passed": True, "hits": [], "cleaned_text": text}
 
@@ -316,21 +293,28 @@ def _check_guardrails(text: str, thread_id: str = "", assistant_id: str = "") ->
         try:
             import uuid as _uuid
             from datetime import datetime as _dt, timezone as _tz
+            from api.db import get_db
+
             now = _dt.now(_tz.utc).isoformat()
-            conn = get_db_raw()
-            try:
+            with get_db() as conn:
                 for hit in hits:
                     conn.execute(
                         """INSERT INTO guardrail_events
                            (id, rule_id, rule_name, category, action, matched_text, thread_id, assistant_id, created_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (str(_uuid.uuid4()), hit["rule_id"], hit["rule_name"],
-                         hit["category"], hit["action"], hit["matched_text"],
-                         thread_id, assistant_id, now),
+                        (
+                            str(_uuid.uuid4()),
+                            hit["rule_id"],
+                            hit["rule_name"],
+                            hit["category"],
+                            hit["action"],
+                            hit["matched_text"],
+                            thread_id,
+                            assistant_id,
+                            now,
+                        ),
                     )
                 conn.commit()
-            finally:
-                conn.close()
         except Exception:
             pass
 
@@ -344,7 +328,6 @@ async def make_graph(config: RunnableConfig):
     enabled_tools = agent_config.get("enabled_prebuilt_tools", [])
     tool_configs = agent_config.get("tool_configs", {})
 
-    # Separate meilisearch_mcp from regular prebuilt tools (it uses stdio MCP, not a factory)
     has_meili_mcp = "meilisearch_mcp" in enabled_tools
     regular_tool_ids = [t for t in enabled_tools if t != "meilisearch_mcp"]
 
@@ -353,22 +336,18 @@ async def make_graph(config: RunnableConfig):
 
     tools = prebuilt_tools + mcp_tools
 
-    # Bedrock Knowledge Bases
     rag_ids = agent_config.get("rag_source_ids", [])
     if rag_ids:
         tools.append(_build_rag_tool(rag_ids))
 
-    # Local RAG (FAISS)
     local_rag_ids = agent_config.get("local_rag_source_ids", [])
     if local_rag_ids:
         tools.append(_build_local_rag_tool(local_rag_ids))
 
-    # Lexical RAG
     lexical_ids = agent_config.get("lexical_rag_source_ids", [])
     if lexical_ids:
         tools.append(_build_lexical_rag_tool(lexical_ids))
 
-    # Meilisearch MCP — chat with your data
     if has_meili_mcp:
         meili_mcp_tools = await _load_meilisearch_mcp_tools(tool_configs)
         tools.extend(meili_mcp_tools)
@@ -376,10 +355,10 @@ async def make_graph(config: RunnableConfig):
     if not tools:
         tools = get_tools_by_ids(["calculator", "current_datetime"])
 
-    model = get_model(agent_config.get("model_id") or None)
+    model = get_model(agent_config.get("model_id") or None, priority=1)
     system_prompt = _build_system_prompt(
         agent_config.get("system_prompt"),
-        agent_config.get("agent_name", "NovaGrid Agents"),
+        agent_config.get("agent_name", "nimAgents Assistant"),
     )
 
     @tool
@@ -400,4 +379,5 @@ async def make_graph(config: RunnableConfig):
         model,
         tools,
         prompt=system_prompt,
+        pre_model_hook=_pre_model_sanitize,
     )
