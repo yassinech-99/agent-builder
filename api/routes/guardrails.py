@@ -1,28 +1,25 @@
-"""Multi-tenant Guardrail rules CRUD, content checking, and event logging."""
+"""Multi-tenant Guardrail rules CRUD, NVIDIA NemoGuard policies, multi-stage checking, and audit telemetry."""
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-import logging
 import re
-import threading
+from typing import Literal
 import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from agent.guardrails_engine import (
+    DEFAULT_BLOCKED_TOPICS,
+    DEFAULT_JAILBREAK_MODEL,
+    DEFAULT_SAFETY_MODEL,
+    DEFAULT_TOPIC_MODEL,
+    safety_engine,
+)
 from api.core.tenancy import get_tenant_context
-from api.db import ensure_tenant_guardrails_seeded, get_db, get_db_path, mask_secret
+from api.db import ensure_tenant_guardrails_seeded, get_db
 
-logger = logging.getLogger("nimagents.api.guardrails")
 router = APIRouter(prefix="/api/guardrails", tags=["guardrails"])
-_GUARDRAIL_DB_LOCK = threading.Lock()
-_COMPILED_RULES_CACHE: dict[tuple[str, str], list[tuple[dict, re.Pattern[str]]]] = {}
-
-
-def _invalidate_rules_cache(tenant_id: str) -> None:
-    _COMPILED_RULES_CACHE.pop((str(get_db_path()), tenant_id), None)
 
 
 class RuleCreate(BaseModel):
@@ -40,10 +37,32 @@ class RuleOut(RuleCreate):
     created_at: str
 
 
+class NemoGuardPolicyUpdate(BaseModel):
+    nemoguard_enabled: bool = True
+    safety_model: str = Field(default=DEFAULT_SAFETY_MODEL, max_length=200)
+    topic_model: str = Field(default=DEFAULT_TOPIC_MODEL, max_length=200)
+    jailbreak_model: str = Field(default=DEFAULT_JAILBREAK_MODEL, max_length=200)
+    endpoint_url: str = Field(default="", max_length=512)
+    enforce_input: bool = True
+    enforce_tool_output: bool = True
+    enforce_model_output: bool = True
+    allowed_topics: list[str] = Field(default_factory=list)
+    blocked_topics: list[str] = Field(default_factory=lambda: list(DEFAULT_BLOCKED_TOPICS))
+    jailbreak_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+
+
 class CheckRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=50000)
     thread_id: str = ""
     assistant_id: str = ""
+
+
+class EvaluateRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=50000)
+    stage: Literal["input", "tool_output", "output"] = "input"
+    thread_id: str = ""
+    assistant_id: str = ""
+    record_audit: bool = True
 
 
 class CheckHit(BaseModel):
@@ -52,12 +71,20 @@ class CheckHit(BaseModel):
     category: str
     action: str
     matched_text: str
+    detector: str = "regex"
+    stage: str = "input"
+    risk_score: float = 0.0
 
 
 class CheckResponse(BaseModel):
     passed: bool
     redacted_text: str
     hits: list[CheckHit]
+    stage: str = "input"
+    blocked_reason: str = ""
+    risk_score: float = 0.0
+    latency_ms: float = 0.0
+    detectors_run: list[str] = Field(default_factory=list)
 
 
 class EventOut(BaseModel):
@@ -67,9 +94,25 @@ class EventOut(BaseModel):
     category: str | None
     action: str | None
     matched_text: str | None
+    stage: str = "input"
+    detector: str = "regex"
+    latency_ms: float = 0.0
+    risk_score: float = 0.0
     thread_id: str
     assistant_id: str
     created_at: str
+
+
+@router.get("/policy")
+def get_nemoguard_policy():
+    ctx = get_tenant_context()
+    return safety_engine.get_policy_sync(ctx).to_dict()
+
+
+@router.put("/policy")
+def update_nemoguard_policy(body: NemoGuardPolicyUpdate):
+    ctx = get_tenant_context()
+    return safety_engine.upsert_policy_sync(body.model_dump(), ctx).to_dict()
 
 
 @router.get("/rules", response_model=list[RuleOut])
@@ -116,7 +159,7 @@ def create_rule(body: RuleCreate):
             "SELECT * FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
             (rule_id, ctx.tenant_id),
         ).fetchone()
-    _invalidate_rules_cache(ctx.tenant_id)
+    safety_engine.invalidate_tenant_cache(ctx.tenant_id)
     return dict(row)
 
 
@@ -147,10 +190,11 @@ def update_rule(rule_id: str, body: RuleCreate):
             "SELECT * FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
             (rule_id, ctx.tenant_id),
         ).fetchone()
-    _invalidate_rules_cache(ctx.tenant_id)
+    safety_engine.invalidate_tenant_cache(ctx.tenant_id)
     return dict(row)
 
 
+@router.delete("/rules/{rule_id}")
 @router.delete("/{rule_id}")
 def delete_rule(rule_id: str):
     ctx = get_tenant_context()
@@ -160,119 +204,64 @@ def delete_rule(rule_id: str):
             (rule_id, ctx.tenant_id),
         )
         conn.commit()
-    _invalidate_rules_cache(ctx.tenant_id)
+    safety_engine.invalidate_tenant_cache(ctx.tenant_id)
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"ok": True}
 
 
-def _get_compiled_tenant_rules(tenant_id: str) -> list[tuple[dict, re.Pattern[str]]]:
-    cache_key = (str(get_db_path()), tenant_id)
-    cached = _COMPILED_RULES_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    with _GUARDRAIL_DB_LOCK, get_db() as conn:
-        ensure_tenant_guardrails_seeded(conn, tenant_id)
-        rows = conn.execute(
-            "SELECT * FROM guardrail_rules WHERE tenant_id = ? AND enabled = 1",
-            (tenant_id,),
-        ).fetchall()
-    compiled: list[tuple[dict, re.Pattern[str]]] = []
-    for r in rows:
-        pat = r["pattern"]
-        if not pat:
-            continue
-        try:
-            compiled.append((dict(r), re.compile(pat)))
-        except re.error:
-            continue
-    _COMPILED_RULES_CACHE[cache_key] = compiled
-    return compiled
-
-
 @router.post("/check", response_model=CheckResponse)
 async def check_text(body: CheckRequest):
     ctx = get_tenant_context()
-    compiled_rules = await asyncio.to_thread(_get_compiled_tenant_rules, ctx.tenant_id)
-
-    hits: list[CheckHit] = []
-    redacted_text = body.text
-    for rule, regex in compiled_rules:
-        match = regex.search(body.text)
-        if match:
-            raw_match = match.group()[:200]
-            display_match = (
-                mask_secret(raw_match) if rule["category"] == "secrets" else raw_match
-            )
-            hit = CheckHit(
-                rule_id=rule["id"],
-                rule_name=rule["name"],
-                category=rule["category"],
-                action=rule["action"],
-                matched_text=display_match,
-            )
-            hits.append(hit)
-            if rule["action"] in ("redact", "block"):
-                redacted_text = regex.sub("[REDACTED]", redacted_text)
-
-    if hits:
-        await asyncio.to_thread(
-            _log_events,
-            hits,
-            body.thread_id,
-            body.assistant_id,
-            ctx.tenant_id,
-            ctx.workspace_id,
-        )
-
-    has_block = any(h.action == "block" for h in hits)
+    res = await safety_engine.evaluate(
+        body.text,
+        stage="input",
+        thread_id=body.thread_id,
+        assistant_id=body.assistant_id,
+        ctx=ctx,
+    )
     return CheckResponse(
-        passed=not has_block,
-        redacted_text=redacted_text,
-        hits=hits,
+        passed=res.passed,
+        redacted_text=res.sanitized_text,
+        hits=[CheckHit(**h.__dict__) for h in res.hits],
+        stage=res.stage,
+        blocked_reason=res.blocked_reason,
+        risk_score=round(res.risk_score, 4),
+        latency_ms=round(res.latency_ms, 3),
+        detectors_run=res.detectors_run,
     )
 
 
+@router.post("/evaluate")
+async def evaluate_stage_text(body: EvaluateRequest):
+    ctx = get_tenant_context()
+    res = await safety_engine.evaluate(
+        body.text,
+        stage=body.stage,
+        thread_id=body.thread_id,
+        assistant_id=body.assistant_id,
+        ctx=ctx,
+        record_audit=body.record_audit,
+    )
+    return res.to_dict()
+
+
 @router.get("/events", response_model=list[EventOut])
-def list_events(limit: int = 50):
+def list_events(limit: int = 50, stage: str = ""):
     ctx = get_tenant_context()
     with get_db() as conn:
-        rows = conn.execute(
-            """SELECT * FROM guardrail_events
-               WHERE tenant_id = ? AND workspace_id = ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (ctx.tenant_id, ctx.workspace_id, min(limit, 200)),
-        ).fetchall()
+        if stage:
+            rows = conn.execute(
+                """SELECT * FROM guardrail_events
+                   WHERE tenant_id = ? AND workspace_id = ? AND stage = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (ctx.tenant_id, ctx.workspace_id, stage, min(limit, 200)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM guardrail_events
+                   WHERE tenant_id = ? AND workspace_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (ctx.tenant_id, ctx.workspace_id, min(limit, 200)),
+            ).fetchall()
     return [dict(r) for r in rows]
-
-
-def _log_events(
-    hits: list[CheckHit],
-    thread_id: str,
-    assistant_id: str,
-    tenant_id: str,
-    workspace_id: str,
-) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    with _GUARDRAIL_DB_LOCK, get_db() as conn:
-        for hit in hits:
-            conn.execute(
-                """INSERT INTO guardrail_events
-                   (id, tenant_id, workspace_id, rule_id, rule_name, category, action,
-                    matched_text, thread_id, assistant_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(uuid.uuid4()),
-                    tenant_id,
-                    workspace_id,
-                    hit.rule_id,
-                    hit.rule_name,
-                    hit.category,
-                    hit.action,
-                    hit.matched_text,
-                    thread_id,
-                    assistant_id,
-                    now,
-                ),
-            )
-        conn.commit()

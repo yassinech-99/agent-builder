@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS guardrail_events (
     category TEXT,
     action TEXT,
     matched_text TEXT,
+    stage TEXT DEFAULT 'input',
+    detector TEXT DEFAULT 'regex',
+    latency_ms DOUBLE PRECISION DEFAULT 0.0,
+    risk_score DOUBLE PRECISION DEFAULT 0.0,
     thread_id TEXT DEFAULT '',
     assistant_id TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -129,13 +133,18 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     tenant_id TEXT NOT NULL DEFAULT 'default',
     workspace_id TEXT NOT NULL DEFAULT 'default',
     user_id TEXT DEFAULT 'anonymous',
+    agent_id TEXT DEFAULT 'agent',
+    thread_id TEXT DEFAULT '',
     provider TEXT NOT NULL DEFAULT 'nvidia_nim',
     model_name TEXT NOT NULL,
     prompt_tokens INTEGER DEFAULT 0,
     completion_tokens INTEGER DEFAULT 0,
+    kv_cached_tokens INTEGER DEFAULT 0,
     estimated_usd DOUBLE PRECISION DEFAULT 0.0,
     cache_tier TEXT DEFAULT 'none',
     latency_ms DOUBLE PRECISION DEFAULT 0.0,
+    ttft_ms DOUBLE PRECISION DEFAULT 0.0,
+    queue_wait_ms DOUBLE PRECISION DEFAULT 0.0,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -401,6 +410,81 @@ CREATE TABLE IF NOT EXISTS rag_child_chunks (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS nemoguard_policies (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    nemoguard_enabled BOOLEAN DEFAULT TRUE,
+    safety_model TEXT NOT NULL DEFAULT 'nvidia/llama-3.1-nemotron-safety-guard-8b-v3',
+    topic_model TEXT NOT NULL DEFAULT 'nvidia/llama-3.1-nemoguard-8b-topic-control',
+    jailbreak_model TEXT NOT NULL DEFAULT 'nvidia/nemoguard-jailbreak-detect',
+    endpoint_url TEXT NOT NULL DEFAULT '',
+    enforce_input BOOLEAN DEFAULT TRUE,
+    enforce_tool_output BOOLEAN DEFAULT TRUE,
+    enforce_model_output BOOLEAN DEFAULT TRUE,
+    allowed_topics_json TEXT NOT NULL DEFAULT '[]',
+    blocked_topics_json TEXT NOT NULL DEFAULT '["malware development", "credential theft", "insider trading"]',
+    jailbreak_threshold DOUBLE PRECISION DEFAULT 0.65,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS voice_sessions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    user_id TEXT NOT NULL DEFAULT 'anonymous',
+    thread_id TEXT NOT NULL DEFAULT '',
+    model_id TEXT NOT NULL DEFAULT '',
+    asr_engine TEXT NOT NULL DEFAULT 'nvidia/parakeet-ctc-1.1b-asr',
+    tts_engine TEXT NOT NULL DEFAULT 'nvidia/magpie-tts-multilingual',
+    voice_preset TEXT NOT NULL DEFAULT 'English-US.Female-1',
+    sample_rate_hz INTEGER DEFAULT 16000,
+    utterances_count INTEGER DEFAULT 0,
+    barge_ins_count INTEGER DEFAULT 0,
+    dropped_frames_count INTEGER DEFAULT 0,
+    avg_asr_ms DOUBLE PRECISION DEFAULT 0.0,
+    avg_ttft_ms DOUBLE PRECISION DEFAULT 0.0,
+    avg_tts_ms DOUBLE PRECISION DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'completed',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS eval_datasets (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'regression',
+    cases_json TEXT NOT NULL DEFAULT '[]',
+    pass_threshold DOUBLE PRECISION DEFAULT 0.85,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    dataset_id TEXT NOT NULL DEFAULT '',
+    dataset_name TEXT NOT NULL DEFAULT '',
+    run_mode TEXT NOT NULL DEFAULT 'regression',
+    model_a TEXT NOT NULL DEFAULT 'nvidia/nemotron-3-super-120b-a12b',
+    model_b TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'completed',
+    pass_rate DOUBLE PRECISION DEFAULT 1.0,
+    avg_score_a DOUBLE PRECISION DEFAULT 1.0,
+    avg_score_b DOUBLE PRECISION DEFAULT 0.0,
+    p50_latency_ms DOUBLE PRECISION DEFAULT 0.0,
+    p95_latency_ms DOUBLE PRECISION DEFAULT 0.0,
+    total_tokens INTEGER DEFAULT 0,
+    estimated_usd DOUBLE PRECISION DEFAULT 0.0,
+    results_json TEXT NOT NULL DEFAULT '[]',
+    gate_passed BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable & FORCE Row-Level Security across every multi-tenant table
 DO $$
 DECLARE
@@ -430,7 +514,11 @@ BEGIN
         'procedural_memories',
         'rag_documents',
         'rag_parent_chunks',
-        'rag_child_chunks'
+        'rag_child_chunks',
+        'nemoguard_policies',
+        'voice_sessions',
+        'eval_datasets',
+        'eval_runs'
     ]
     LOOP
         EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%I_tenant_ws ON %I (tenant_id, workspace_id)', tbl, tbl);

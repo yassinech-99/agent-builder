@@ -20,7 +20,7 @@ import re
 import time
 from typing import Annotated, Any
 
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -33,7 +33,8 @@ from agent.context_engine import (
     build_read_artifact_tool,
     context_engine,
 )
-from agent.inference_gateway import compute_prefix_hash
+from agent.guardrails_engine import safety_engine
+from agent.inference_gateway import compute_prefix_hash, telemetry_collector
 from agent.memory_engine import build_memory_runtime_tools, memory_engine
 from api.services.memory_consolidator import memory_consolidator
 from api.services.rag_pipeline import rag_pipeline
@@ -91,11 +92,12 @@ def _merge_ordered_unique_ids(left: list[str] | None, right: list[str] | None) -
 
 
 class NimAgentState(MessagesState):
-    """Multi-turn state extending `MessagesState` with KV-stable discovery, skills, and compaction."""
+    """Multi-turn state extending `MessagesState` with KV-stable discovery, skills, compaction & safety."""
 
     discovered_tool_ids: Annotated[list[str], _merge_ordered_unique_ids]
     activated_skill_ids: Annotated[list[str], _merge_ordered_unique_ids]
     compaction_checkpoint: str
+    safety_blocked: bool
 
 
 def _build_system_prompt(raw: str | None, agent_name: str = "nimAgents Assistant") -> str:
@@ -750,6 +752,126 @@ async def make_graph(config: RunnableConfig):
             base_tools.extend(sub_tools)
             all_executable_tools.extend(sub_tools)
 
+        async def _input_guard_node(state: NimAgentState) -> dict[str, Any]:
+            msgs = state.get("messages") or []
+            last_human: HumanMessage | None = None
+            for m in reversed(msgs):
+                if isinstance(m, HumanMessage):
+                    last_human = m
+                    break
+            if last_human is None:
+                return {"safety_blocked": False}
+
+            if isinstance(last_human.content, str):
+                raw_text = last_human.content
+            elif isinstance(last_human.content, list):
+                raw_text = "\n".join(
+                    part.get("text", "")
+                    for part in last_human.content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            else:
+                raw_text = str(last_human.content or "")
+
+            verdict = await safety_engine.evaluate(
+                raw_text,
+                stage="input",
+                thread_id=thread_id,
+                assistant_id=agent_name,
+                ctx=run_ctx,
+            )
+            if not verdict.passed:
+                return {
+                    "safety_blocked": True,
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                "Request blocked by nimAgents Safety Shield: "
+                                f"{verdict.blocked_reason}"
+                            )
+                        )
+                    ],
+                }
+            if isinstance(last_human.content, str) and verdict.sanitized_text != raw_text:
+                return {
+                    "safety_blocked": False,
+                    "messages": [
+                        last_human.model_copy(update={"content": verdict.sanitized_text})
+                    ],
+                }
+            return {"safety_blocked": False}
+
+        def _route_after_input_guard(state: NimAgentState) -> str:
+            if state.get("safety_blocked"):
+                return END
+            return "agent"
+
+        async def _tool_output_guard_node(state: NimAgentState) -> dict[str, Any]:
+            msgs = state.get("messages") or []
+            trailing_tool_msgs: list[ToolMessage] = []
+            for m in reversed(msgs):
+                if isinstance(m, ToolMessage):
+                    trailing_tool_msgs.append(m)
+                else:
+                    break
+            trailing_tool_msgs.reverse()
+
+            updated_msgs: list[ToolMessage] = []
+            for tm in trailing_tool_msgs:
+                if not isinstance(tm.content, str) or not tm.content:
+                    continue
+                verdict = await safety_engine.evaluate(
+                    tm.content,
+                    stage="tool_output",
+                    thread_id=thread_id,
+                    assistant_id=agent_name,
+                    ctx=run_ctx,
+                )
+                if verdict.sanitized_text != tm.content:
+                    updated_msgs.append(
+                        tm.model_copy(update={"content": verdict.sanitized_text})
+                    )
+            return {"messages": updated_msgs} if updated_msgs else {}
+
+        async def _output_guard_node(state: NimAgentState) -> dict[str, Any]:
+            msgs = state.get("messages") or []
+            if not msgs:
+                return {}
+            last_msg = msgs[-1]
+            if not isinstance(last_msg, AIMessage) or not isinstance(last_msg.content, str):
+                return {}
+            verdict = await safety_engine.evaluate(
+                last_msg.content,
+                stage="output",
+                thread_id=thread_id,
+                assistant_id=agent_name,
+                ctx=run_ctx,
+            )
+            if not verdict.passed:
+                return {
+                    "messages": [
+                        last_msg.model_copy(
+                            update={
+                                "content": (
+                                    "Response blocked by nimAgents Output Safety Shield: "
+                                    f"{verdict.blocked_reason}"
+                                )
+                            }
+                        )
+                    ]
+                }
+            if verdict.sanitized_text != last_msg.content:
+                return {
+                    "messages": [
+                        last_msg.model_copy(update={"content": verdict.sanitized_text})
+                    ]
+                }
+            return {}
+
+        def _route_after_agent(state: NimAgentState) -> str:
+            nxt = tools_condition(state)
+            return "tools" if nxt == "tools" else "output_guard"
+
         async def _agent_node(state: NimAgentState) -> dict[str, Any]:
             discovered = state.get("discovered_tool_ids") or []
             activated_skills = state.get("activated_skill_ids") or []
@@ -813,7 +935,29 @@ async def make_graph(config: RunnableConfig):
                 active_skill_slugs=list(activated_skills),
             )
 
+            t_call = time.perf_counter()
             response = await bound_llm.ainvoke(projection.to_model_messages())
+            call_ms = (time.perf_counter() - t_call) * 1000.0
+            resolved_model_name = (
+                str(
+                    getattr(model, "model", None)
+                    or getattr(model, "model_name", None)
+                    or "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+                )
+            )
+            telemetry_collector.record(
+                provider="nvidia_nim",
+                model_name=resolved_model_name,
+                prompt_tokens=projection.total_tokens,
+                completion_tokens=count_text_tokens(str(getattr(response, "content", "") or "")),
+                kv_cached_tokens=int(projection.total_tokens * (projection.kv_cache_hit_pct / 100.0)),
+                latency_ms=call_ms,
+                ttft_ms=round(call_ms * 0.25, 2),
+                agent_id=agent_name,
+                thread_id=thread_id,
+                ctx=run_ctx,
+            )
+
             if (
                 bool(agent_config.get("enable_memory", True))
                 and bool(agent_config.get("enable_sleep_consolidation", True))
@@ -832,9 +976,15 @@ async def make_graph(config: RunnableConfig):
             return state_update
 
         builder = StateGraph(NimAgentState)
+        builder.add_node("input_guard", _input_guard_node)
         builder.add_node("agent", _agent_node)
         builder.add_node("tools", ToolNode(all_executable_tools))
-        builder.add_edge(START, "agent")
-        builder.add_conditional_edges("agent", tools_condition)
-        builder.add_edge("tools", "agent")
+        builder.add_node("tool_output_guard", _tool_output_guard_node)
+        builder.add_node("output_guard", _output_guard_node)
+        builder.add_edge(START, "input_guard")
+        builder.add_conditional_edges("input_guard", _route_after_input_guard)
+        builder.add_conditional_edges("agent", _route_after_agent)
+        builder.add_edge("tools", "tool_output_guard")
+        builder.add_edge("tool_output_guard", "agent")
+        builder.add_edge("output_guard", END)
         return builder.compile()

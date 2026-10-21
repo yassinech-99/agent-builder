@@ -24,12 +24,14 @@ import {
   ArrowDown,
   Database,
   LoaderCircle,
+  Mic,
   PanelRightOpen,
   PanelRightClose,
   SquarePen,
   XIcon,
   Plus,
 } from "lucide-react";
+import { VoiceSession } from "../voice/voice-session";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import ThreadHistory from "./history";
@@ -128,6 +130,7 @@ export function Thread() {
     parseAsBoolean.withDefault(false),
   );
   const [knowledgeModalOpen, setKnowledgeModalOpen] = useState(false);
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [vectorSources, setVectorSources] = useState<KnowledgeSource[]>([]);
@@ -693,6 +696,16 @@ export function Thread() {
                   />
                 )}
               </div>
+              <Button
+                type="button"
+                variant={voiceModeOpen ? "default" : "outline"}
+                size="sm"
+                className="mr-2"
+                onClick={() => setVoiceModeOpen((v) => !v)}
+              >
+                <Mic className="mr-1.5 h-3.5 w-3.5" />
+                Voice
+              </Button>
             </div>
           )}
           {chatStarted && (
@@ -725,6 +738,15 @@ export function Thread() {
 
               <div className="flex items-center gap-3">
                 <ContextMeter threadId={threadId} messages={messages} />
+                <Button
+                  type="button"
+                  variant={voiceModeOpen ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setVoiceModeOpen((v) => !v)}
+                >
+                  <Mic className="mr-1.5 h-3.5 w-3.5" />
+                  Voice
+                </Button>
                 <TooltipIconButton
                   size="lg"
                   className="p-4"
@@ -737,6 +759,12 @@ export function Thread() {
               </div>
 
               <div className="from-background to-background/0 absolute inset-x-0 top-full h-5 bg-gradient-to-b" />
+            </div>
+          )}
+
+          {voiceModeOpen && (
+            <div className="z-20 mx-auto mt-12 w-full max-w-2xl px-4">
+              <VoiceSession inline threadId={threadId} />
             </div>
           )}
 
