@@ -1,81 +1,152 @@
-"""Nova 2 Sonic voice WebSocket endpoint.
-
-Proxies browser audio to Amazon Bedrock bidirectional streaming for
-real-time conversational voice agent interactions.
-"""
+"""Streaming Voice WebSocket gateway powered by NVIDIA Riva Speech NIM & active nimAgents chat models."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 import json
 import logging
 import os
-from typing import Any
+import re
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-logger = logging.getLogger("novagrid.api.voice")
+from agent.model import get_model
+
+logger = logging.getLogger("nimagents.api.voice")
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
-SONIC_MODEL_ID = os.getenv("SONIC_MODEL_ID", "amazon.nova-2-sonic-v1:0")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+MAX_AUDIO_CHUNKS = 120
+NIM_ASR_BASE_URL = os.getenv("NIM_ASR_BASE_URL", "")
+NIM_TTS_BASE_URL = os.getenv("NIM_TTS_BASE_URL", "")
+NIM_ASR_MODEL = os.getenv("NIM_ASR_MODEL", "nvidia/parakeet-ctc-1.1b-asr")
+NIM_TTS_MODEL = os.getenv("NIM_TTS_MODEL", "nvidia/magpie-tts-multilingual")
 
 
-async def _get_bedrock_client():
-    """Create a boto3 bedrock-runtime client for streaming."""
-    import boto3
+async def _transcribe_audio_buffer(audio_bytes: bytes) -> str | None:
+    """Transcribe buffered audio via an OpenAI/Riva-compatible `/audio/transcriptions` NIM endpoint."""
+    if not NIM_ASR_BASE_URL or not audio_bytes:
+        return None
+    from api.app import get_http_client
 
-    kwargs: dict = {"region_name": AWS_REGION}
-    ak = os.getenv("AWS_ACCESS_KEY_ID")
-    sk = os.getenv("AWS_SECRET_ACCESS_KEY")
-    if ak and sk:
-        kwargs["aws_access_key_id"] = ak
-        kwargs["aws_secret_access_key"] = sk
-    return boto3.client("bedrock-runtime", **kwargs)
+    client = get_http_client()
+    headers: dict[str, str] = {}
+    api_key = os.getenv("NVIDIA_API_KEY", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = f"{NIM_ASR_BASE_URL.rstrip('/')}/audio/transcriptions"
+    files = {"file": ("utterance.webm", audio_bytes, "audio/webm")}
+    data = {"model": NIM_ASR_MODEL}
+    resp = await client.post(url, headers=headers, data=data, files=files, timeout=20.0)
+    resp.raise_for_status()
+    return (resp.json().get("text") or "").strip() or None
+
+
+async def _synthesize_tts_chunk(text: str) -> bytes | None:
+    """Synthesize speech audio via an OpenAI/Riva-compatible `/audio/speech` NIM endpoint."""
+    if not NIM_TTS_BASE_URL or not text.strip():
+        return None
+    from api.app import get_http_client
+
+    client = get_http_client()
+    headers = {"Content-Type": "application/json"}
+    api_key = os.getenv("NVIDIA_API_KEY", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = f"{NIM_TTS_BASE_URL.rstrip('/')}/audio/speech"
+    payload = {
+        "model": NIM_TTS_MODEL,
+        "input": text,
+        "voice": os.getenv("NIM_TTS_VOICE", "English-US.Female-1"),
+        "response_format": "mp3",
+    }
+    resp = await client.post(url, headers=headers, json=payload, timeout=20.0)
+    resp.raise_for_status()
+    return resp.content
 
 
 @router.websocket("/ws")
 async def voice_ws(websocket: WebSocket):
-    """Bidirectional voice WebSocket.
-
-    Protocol (JSON messages):
-      Client -> Server:
-        {"type": "audio", "data": "<base64 PCM 16-bit 16kHz mono>"}
-        {"type": "text", "data": "user text input"}
-        {"type": "stop"}
-
-      Server -> Client:
-        {"type": "transcript", "role": "user"|"assistant", "text": "..."}
-        {"type": "audio", "data": "<base64 audio chunk>"}
-        {"type": "tool_use", "name": "...", "input": {...}}
-        {"type": "status", "state": "listening"|"thinking"|"speaking"}
-        {"type": "error", "detail": "..."}
-    """
+    """Bidirectional low-latency voice & conversational WebSocket."""
     await websocket.accept()
-    logger.info("Voice WebSocket connected")
+    model_id = websocket.query_params.get("model_id") or None
+    logger.info("nimAgents Voice WebSocket connected (model_id=%s)", model_id)
 
     try:
-        client = await _get_bedrock_client()
+        llm = get_model(model_id=model_id, priority=1)
     except Exception as exc:
-        await websocket.send_json({"type": "error", "detail": f"AWS client init failed: {exc}"})
+        await websocket.send_json(
+            {"type": "error", "detail": f"Model initialization failed: {exc}"}
+        )
         await websocket.close()
         return
 
-    audio_buffer: list[bytes] = []
-    session_active = True
+    # Bounded ring buffer prevents per-client WebSocket RAM leaks under long sessions
+    audio_buffer: deque[bytes] = deque(maxlen=MAX_AUDIO_CHUNKS)
+    history: list[BaseMessage] = []
 
     async def _send_status(state: str):
         await websocket.send_json({"type": "status", "state": state})
 
+    async def _run_turn(user_text: str, echo_user_transcript: bool = False):
+        if echo_user_transcript:
+            await websocket.send_json(
+                {"type": "transcript", "role": "user", "text": user_text}
+            )
+        await _send_status("thinking")
+        history.append(HumanMessage(content=user_text))
+
+        try:
+            chunks: list[str] = []
+            async for chunk in llm.astream(history[-16:]):
+                piece = getattr(chunk, "content", "")
+                if isinstance(piece, str) and piece:
+                    chunks.append(piece)
+
+            raw_reply = "".join(chunks)
+            reply_text = (
+                re.sub(r"<think>.*?</think>", "", raw_reply, flags=re.DOTALL | re.IGNORECASE).strip()
+                or "I received your message."
+            )
+            history.append(AIMessage(content=reply_text))
+
+            await websocket.send_json(
+                {"type": "transcript", "role": "assistant", "text": reply_text}
+            )
+
+            try:
+                audio_out = await _synthesize_tts_chunk(reply_text)
+                if audio_out:
+                    await _send_status("speaking")
+                    await websocket.send_json(
+                        {
+                            "type": "audio",
+                            "data": base64.b64encode(audio_out).decode("ascii"),
+                        }
+                    )
+            except Exception as tts_exc:
+                logger.warning("TTS synthesis skipped: %s", tts_exc)
+
+            await _send_status("listening")
+        except Exception as exc:
+            logger.exception("Voice turn generation failed")
+            await websocket.send_json({"type": "error", "detail": str(exc)})
+            await _send_status("listening")
+
     try:
         await _send_status("listening")
 
-        while session_active:
+        while True:
             try:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=300)
             except asyncio.TimeoutError:
-                await websocket.send_json({"type": "error", "detail": "Session timed out"})
+                await websocket.send_json(
+                    {"type": "error", "detail": "Voice session timed out"}
+                )
                 break
 
             try:
@@ -84,9 +155,7 @@ async def voice_ws(websocket: WebSocket):
                 continue
 
             msg_type = msg.get("type", "")
-
             if msg_type == "stop":
-                session_active = False
                 break
 
             if msg_type == "audio":
@@ -94,68 +163,24 @@ async def voice_ws(websocket: WebSocket):
                 audio_buffer.append(audio_data)
                 continue
 
+            if msg_type == "flush_audio":
+                joined = b"".join(audio_buffer)
+                audio_buffer.clear()
+                if joined:
+                    transcript = await _transcribe_audio_buffer(joined)
+                    if transcript:
+                        await _run_turn(transcript, echo_user_transcript=True)
+                continue
+
             if msg_type == "text":
-                user_text = msg.get("data", "")
-                if not user_text:
-                    continue
-
-                await websocket.send_json({
-                    "type": "transcript",
-                    "role": "user",
-                    "text": user_text,
-                })
-                await _send_status("thinking")
-
-                try:
-                    response = await asyncio.to_thread(
-                        _invoke_sonic,
-                        client,
-                        user_text,
-                    )
-                    await websocket.send_json({
-                        "type": "transcript",
-                        "role": "assistant",
-                        "text": response,
-                    })
-                    await _send_status("listening")
-                except Exception as exc:
-                    logger.exception("Sonic invocation failed")
-                    await websocket.send_json({
-                        "type": "error",
-                        "detail": str(exc),
-                    })
-                    await _send_status("listening")
+                user_text = (msg.get("data") or "").strip()
+                if user_text:
+                    await _run_turn(user_text, echo_user_transcript=False)
 
     except WebSocketDisconnect:
-        logger.info("Voice WebSocket disconnected")
+        logger.info("nimAgents Voice WebSocket disconnected")
     except Exception as exc:
         logger.exception("Voice WebSocket error: %s", exc)
     finally:
-        logger.info("Voice session ended")
-
-
-def _invoke_sonic(client: Any, text: str) -> str:
-    """Invoke Nova 2 Sonic via the Bedrock Converse API for text-based interaction.
-
-    For full bidirectional audio streaming, this would use the
-    bedrock-runtime invoke_model_with_response_stream API. This simplified
-    version uses Converse for text-in/text-out as a stable demo path.
-    """
-    try:
-        response = client.converse(
-            modelId=SONIC_MODEL_ID,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": text}],
-                }
-            ],
-        )
-        output = response.get("output", {})
-        message = output.get("message", {})
-        content = message.get("content", [])
-        if content and "text" in content[0]:
-            return content[0]["text"]
-        return "I received your message but couldn't generate a response."
-    except Exception as exc:
-        raise RuntimeError(f"Sonic model error: {exc}") from exc
+        audio_buffer.clear()
+        logger.info("nimAgents Voice session ended")

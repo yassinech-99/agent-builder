@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from api.db import get_db
+from api.db import get_db, mask_secret
 
-logger = logging.getLogger("novagrid.api.guardrails")
+logger = logging.getLogger("nimagents.api.guardrails")
 router = APIRouter(prefix="/api/guardrails", tags=["guardrails"])
 
 
@@ -45,6 +45,7 @@ class CheckHit(BaseModel):
 
 class CheckResponse(BaseModel):
     passed: bool
+    redacted_text: str
     hits: list[CheckHit]
 
 
@@ -125,6 +126,7 @@ def check_text(body: CheckRequest):
         ).fetchall()
 
     hits: list[CheckHit] = []
+    redacted_text = body.text
     for rule in rules:
         pattern = rule["pattern"]
         if not pattern:
@@ -134,20 +136,30 @@ def check_text(body: CheckRequest):
         except re.error:
             continue
         if match:
+            raw_match = match.group()[:200]
+            display_match = (
+                mask_secret(raw_match) if rule["category"] == "secrets" else raw_match
+            )
             hit = CheckHit(
                 rule_id=rule["id"],
                 rule_name=rule["name"],
                 category=rule["category"],
                 action=rule["action"],
-                matched_text=match.group()[:200],
+                matched_text=display_match,
             )
             hits.append(hit)
+            if rule["action"] in ("redact", "block"):
+                redacted_text = re.sub(pattern, "[REDACTED]", redacted_text)
 
     if hits:
         _log_events(hits, body.thread_id, body.assistant_id)
 
     has_block = any(h.action == "block" for h in hits)
-    return CheckResponse(passed=not has_block, hits=hits)
+    return CheckResponse(
+        passed=not has_block,
+        redacted_text=redacted_text,
+        hits=hits,
+    )
 
 
 @router.get("/events", response_model=list[EventOut])

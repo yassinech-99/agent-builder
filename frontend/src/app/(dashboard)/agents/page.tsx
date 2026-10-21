@@ -6,9 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Plus, Trash2, Pencil, Bot, Copy } from "lucide-react";
 import { createClient } from "@/providers/client";
 import { getApiKey } from "@/lib/api-key";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 import type { Assistant } from "@langchain/langgraph-sdk";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:2024";
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Assistant[]>([]);
@@ -16,7 +15,7 @@ export default function AgentsPage() {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const client = createClient(API_URL, getApiKey() ?? undefined);
+      const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
       const results = await client.assistants.search({
         graphId: "agent",
         limit: 100,
@@ -36,8 +35,8 @@ export default function AgentsPage() {
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this agent and all its threads?")) return;
     try {
-      const client = createClient(API_URL, getApiKey() ?? undefined);
-      await client.assistants.delete(id, { deleteThreads: true });
+      const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
+      await client.assistants.delete(id);
       setAgents((prev) => prev.filter((a) => a.assistant_id !== id));
     } catch (e) {
       console.error("Failed to delete agent:", e);
@@ -46,7 +45,7 @@ export default function AgentsPage() {
 
   const handleDuplicate = async (agent: Assistant) => {
     try {
-      const client = createClient(API_URL, getApiKey() ?? undefined);
+      const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
       const created = await client.assistants.create({
         graphId: "agent",
         name: `${agent.name || "Agent"} (copy)`,

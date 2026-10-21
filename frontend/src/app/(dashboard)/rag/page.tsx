@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { getBuilderApiUrl } from "@/lib/runtime-urls";
 import {
   Trash2,
   Database,
@@ -19,23 +20,34 @@ import {
   Sparkles,
 } from "lucide-react";
 
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
-
-// For the hackathon demo we expose only a single, known-good embedding
-// option to avoid Bedrock model-id mismatches during live indexing.
 const EMBEDDING_MODELS = [
-  { value: "titan-embed-text-v2", label: "Titan Embed Text v2" },
+  {
+    value: "nvidia/llama-nemotron-embed-1b-v2",
+    label: "NVIDIA Llama Nemotron Embed 1B v2 (NIM)",
+  },
+  {
+    value: "nvidia/nv-embedqa-e5-v5",
+    label: "NVIDIA NV-EmbedQA E5 v5 (NIM)",
+  },
+  {
+    value: "local/all-MiniLM-L6-v2",
+    label: "Local SentenceTransformers (all-MiniLM-L6-v2 · Offline)",
+  },
+  {
+    value: "text-embedding-3-small",
+    label: "OpenAI text-embedding-3-small",
+  },
 ] as const;
 
-interface RagSource {
+interface NimRagSource {
   id: string;
   name: string;
   description: string;
-  knowledge_base_id: string;
-  region: string;
-  s3_bucket: string;
-  s3_prefix: string;
+  endpoint_url: string;
+  collection_name: string;
+  ranking_model: string;
+  storage_bucket: string;
+  storage_prefix: string;
   status: string;
   created_at: string;
 }
@@ -49,8 +61,8 @@ interface LocalRagSource {
   chunk_size: number;
   chunk_overlap: number;
   embedding_model: string;
-  s3_bucket: string;
-  s3_prefix: string;
+  storage_bucket: string;
+  storage_prefix: string;
   created_at: string;
 }
 
@@ -66,18 +78,18 @@ interface LexicalRagSource {
   created_at: string;
 }
 
-type Tab = "bedrock" | "local" | "lexical";
+type Tab = "nim" | "local" | "lexical";
 
 export default function RagPage() {
-  const [tab, setTab] = useState<Tab>("bedrock");
+  const [tab, setTab] = useState<Tab>("local");
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">RAG Sources</h1>
+          <h1 className="text-2xl font-bold tracking-tight">RAG &amp; Knowledge</h1>
           <p className="text-muted-foreground text-sm">
-            Manage knowledge bases for your agents
+            NVIDIA NIM Retrievers, Nemotron Vector Embeddings + Reranking &amp; Meilisearch BM25
           </p>
         </div>
       </div>
@@ -85,9 +97,9 @@ export default function RagPage() {
       <div className="flex gap-1 border-b px-6 pt-2">
         {(
           [
-            { key: "bedrock", icon: BookOpen, label: "Bedrock Knowledge Bases" },
-            { key: "local", icon: HardDrive, label: "Local RAG" },
-            { key: "lexical", icon: TextSearch, label: "Lexical RAG" },
+            { key: "local", icon: HardDrive, label: "Vector RAG (NIM / Local)" },
+            { key: "lexical", icon: TextSearch, label: "Lexical BM25 (Meilisearch)" },
+            { key: "nim", icon: BookOpen, label: "NIM RAG Endpoints" },
           ] as const
         ).map((t) => (
           <button
@@ -106,7 +118,7 @@ export default function RagPage() {
       </div>
 
       <div className="flex-1 overflow-auto">
-        {tab === "bedrock" && <BedrockKBTab />}
+        {tab === "nim" && <NimRagTab />}
         {tab === "local" && <LocalRagTab />}
         {tab === "lexical" && <LexicalRagTab />}
       </div>
@@ -117,9 +129,9 @@ export default function RagPage() {
 function statusColor(status: string) {
   switch (status) {
     case "ready":
-      return "text-green-600 bg-green-50 dark:bg-green-950/30 dark:text-green-400";
+      return "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400";
     case "indexing":
-      return "text-yellow-600 bg-yellow-50 dark:bg-yellow-950/30 dark:text-yellow-400";
+      return "text-amber-600 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400";
     case "error":
       return "text-red-600 bg-red-50 dark:bg-red-950/30 dark:text-red-400";
     default:
@@ -127,19 +139,23 @@ function statusColor(status: string) {
   }
 }
 
-/* ─── Bedrock Knowledge Bases Tab ────────────────────────────────────── */
+/* ─── NVIDIA NIM RAG Endpoints Tab ──────────────────────────────────── */
 
-function BedrockKBTab() {
-  const [sources, setSources] = useState<RagSource[]>([]);
+function NimRagTab() {
+  const [sources, setSources] = useState<NimRagSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [showRegister, setShowRegister] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [regName, setRegName] = useState("");
   const [regDescription, setRegDescription] = useState("");
-  const [regKbId, setRegKbId] = useState("");
-  const [regRegion, setRegRegion] = useState("");
-  const [regS3Bucket, setRegS3Bucket] = useState("");
-  const [regS3Prefix, setRegS3Prefix] = useState("");
+  const [regEndpoint, setRegEndpoint] = useState("http://localhost:8081/v1");
+  const [regCollection, setRegCollection] = useState("");
+  const [regApiKey, setRegApiKey] = useState("");
+  const [regReranker, setRegReranker] = useState(
+    "nvidia/llama-nemotron-rerank-1b-v2",
+  );
+  const [regBucket, setRegBucket] = useState("");
+  const [regPrefix, setRegPrefix] = useState("");
   const [testQuery, setTestQuery] = useState("");
   const [testResults, setTestResults] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -147,10 +163,10 @@ function BedrockKBTab() {
 
   const fetchSources = useCallback(async () => {
     try {
-      const res = await fetch(`${BUILDER_API}/api/rag`);
+      const res = await fetch(`${getBuilderApiUrl()}/api/rag`);
       if (res.ok) setSources(await res.json());
     } catch (e) {
-      console.error("Failed to fetch knowledge bases:", e);
+      console.error("Failed to fetch NIM RAG sources:", e);
     } finally {
       setLoading(false);
     }
@@ -161,29 +177,31 @@ function BedrockKBTab() {
   }, [fetchSources]);
 
   const handleRegister = async () => {
-    if (!regName || !regKbId) return;
+    if (!regName || !regCollection) return;
     setRegistering(true);
     try {
-      const res = await fetch(`${BUILDER_API}/api/rag/register`, {
+      const res = await fetch(`${getBuilderApiUrl()}/api/rag/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: regName,
           description: regDescription,
-          knowledge_base_id: regKbId,
-          region: regRegion,
-          s3_bucket: regS3Bucket,
-          s3_prefix: regS3Prefix,
+          endpoint_url: regEndpoint,
+          collection_name: regCollection,
+          api_key: regApiKey,
+          ranking_model: regReranker,
+          storage_bucket: regBucket,
+          storage_prefix: regPrefix,
         }),
       });
       if (res.ok) {
         setShowRegister(false);
         setRegName("");
         setRegDescription("");
-        setRegKbId("");
-        setRegRegion("");
-        setRegS3Bucket("");
-        setRegS3Prefix("");
+        setRegCollection("");
+        setRegApiKey("");
+        setRegBucket("");
+        setRegPrefix("");
         fetchSources();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -197,9 +215,9 @@ function BedrockKBTab() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Remove this knowledge base?")) return;
+    if (!confirm("Remove this NIM RAG endpoint?")) return;
     try {
-      await fetch(`${BUILDER_API}/api/rag/${id}`, { method: "DELETE" });
+      await fetch(`${getBuilderApiUrl()}/api/rag/${id}`, { method: "DELETE" });
       fetchSources();
     } catch (e) {
       console.error("Failed to delete:", e);
@@ -210,7 +228,7 @@ function BedrockKBTab() {
     if (!testQuery.trim()) return;
     setTestResults(null);
     try {
-      const res = await fetch(`${BUILDER_API}/api/rag/${sourceId}/query`, {
+      const res = await fetch(`${getBuilderApiUrl()}/api/rag/${sourceId}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: testQuery, k: 5 }),
@@ -234,19 +252,19 @@ function BedrockKBTab() {
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-muted-foreground text-sm">
-          Semantic search powered by Amazon Bedrock Knowledge Bases
+          Connect external NVIDIA NIM RAG Blueprint services with NVIDIARerank
         </p>
         <Button onClick={() => setShowRegister(true)} size="sm">
           <Plus className="mr-1.5 h-4 w-4" />
-          Add Knowledge Base
+          Register NIM RAG Endpoint
         </Button>
       </div>
 
       {showRegister && (
-        <div className="bg-card mb-6 rounded-lg border p-6 shadow-sm">
+        <div className="bg-card mb-6 rounded-xl border p-6 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold">
-              Register Bedrock Knowledge Base
+              Register NVIDIA NIM RAG Collection
             </h2>
             <Button
               variant="ghost"
@@ -262,15 +280,33 @@ function BedrockKBTab() {
               <Input
                 value={regName}
                 onChange={(e) => setRegName(e.target.value)}
-                placeholder="HR Policy Docs"
+                placeholder="Engineering Architecture Docs"
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>Knowledge Base ID</Label>
+              <Label>Collection Name</Label>
               <Input
-                value={regKbId}
-                onChange={(e) => setRegKbId(e.target.value)}
-                placeholder="ABCDEF1234"
+                value={regCollection}
+                onChange={(e) => setRegCollection(e.target.value)}
+                placeholder="eng_handbook"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>NIM RAG Endpoint URL</Label>
+              <Input
+                value={regEndpoint}
+                onChange={(e) => setRegEndpoint(e.target.value)}
+                placeholder="http://localhost:8081/v1"
+                className="font-mono text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>NVIDIA Reranker Model</Label>
+              <Input
+                value={regReranker}
+                onChange={(e) => setRegReranker(e.target.value)}
+                placeholder="nvidia/llama-nemotron-rerank-1b-v2"
+                className="font-mono text-xs"
               />
             </div>
             <div className="flex flex-col gap-1.5 md:col-span-2">
@@ -278,61 +314,45 @@ function BedrockKBTab() {
               <Input
                 value={regDescription}
                 onChange={(e) => setRegDescription(e.target.value)}
-                placeholder="Contains company HR policies, handbooks, and guidelines"
+                placeholder="Contains internal specs, runbooks, and API references"
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>
-                S3 Bucket{" "}
+                Object Bucket{" "}
                 <span className="text-muted-foreground text-xs font-normal">
-                  (for data uploads)
+                  (optional MinIO / S3 bucket for uploads)
                 </span>
               </Label>
               <Input
-                value={regS3Bucket}
-                onChange={(e) => setRegS3Bucket(e.target.value)}
-                placeholder="my-kb-data-bucket"
+                value={regBucket}
+                onChange={(e) => setRegBucket(e.target.value)}
+                placeholder="nimagents-kb"
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>
-                S3 Prefix{" "}
+                Object Prefix{" "}
                 <span className="text-muted-foreground text-xs font-normal">
                   (optional folder)
                 </span>
               </Label>
               <Input
-                value={regS3Prefix}
-                onChange={(e) => setRegS3Prefix(e.target.value)}
+                value={regPrefix}
+                onChange={(e) => setRegPrefix(e.target.value)}
                 placeholder="documents/"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>
-                Region{" "}
-                <span className="text-muted-foreground text-xs font-normal">
-                  (optional)
-                </span>
-              </Label>
-              <Input
-                value={regRegion}
-                onChange={(e) => setRegRegion(e.target.value)}
-                placeholder="us-east-1"
               />
             </div>
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setShowRegister(false)}
-            >
+            <Button variant="outline" onClick={() => setShowRegister(false)}>
               Cancel
             </Button>
             <Button
               onClick={handleRegister}
-              disabled={!regName || !regKbId || registering}
+              disabled={!regName || !regCollection || registering}
             >
-              {registering ? "Registering..." : "Register"}
+              {registering ? "Registering..." : "Register Endpoint"}
             </Button>
           </div>
         </div>
@@ -351,9 +371,9 @@ function BedrockKBTab() {
       ) : sources.length === 0 && !showRegister ? (
         <EmptyState
           icon={Database}
-          title="No knowledge bases registered"
-          subtitle="Add your Bedrock Knowledge Base IDs to enable semantic search"
-          actionLabel="Add Knowledge Base"
+          title="No NIM RAG endpoints registered"
+          subtitle="Connect an NVIDIA NIM RAG Retriever microservice for remote multi-collection search"
+          actionLabel="Register NIM RAG Endpoint"
           onAction={() => setShowRegister(true)}
         />
       ) : (
@@ -385,7 +405,7 @@ function AddDataModal({
   onClose,
 }: {
   sourceId: string;
-  source: RagSource;
+  source: NimRagSource;
   onClose: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
@@ -399,7 +419,7 @@ function AddDataModal({
     if (!description.trim()) return;
     setGenerating(true);
     try {
-      const res = await fetch(`${BUILDER_API}/api/rag/generate-metadata`, {
+      const res = await fetch(`${getBuilderApiUrl()}/api/rag/generate-metadata`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -432,12 +452,14 @@ function AddDataModal({
       if (metadataJson.trim()) formData.append("metadata_json", metadataJson);
       if (description.trim()) formData.append("description", description);
       const res = await fetch(
-        `${BUILDER_API}/api/rag/${sourceId}/upload-data`,
+        `${getBuilderApiUrl()}/api/rag/${sourceId}/upload-data`,
         { method: "POST", body: formData },
       );
       const data = await res.json();
       if (res.ok) {
-        setResult(`Uploaded to ${data.s3_uri}${data.metadata_uploaded ? " (with metadata)" : ""}`);
+        setResult(
+          `Uploaded to ${data.storage_uri}${data.metadata_uploaded ? " (with metadata sidecar)" : ""}`,
+        );
         setFile(null);
         setMetadataJson("");
         setDescription("");
@@ -453,14 +475,12 @@ function AddDataModal({
   };
 
   return (
-    <div className="bg-card mb-6 rounded-lg border p-6 shadow-sm">
+    <div className="bg-card mb-6 rounded-xl border p-6 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">
-            Add Data to {source.name}
-          </h2>
+          <h2 className="text-lg font-semibold">Upload Document to {source.name}</h2>
           <p className="text-muted-foreground text-xs">
-            Upload to s3://{source.s3_bucket}/{source.s3_prefix}
+            Destination: s3://{source.storage_bucket}/{source.storage_prefix}
           </p>
         </div>
         <Button variant="ghost" size="icon" onClick={onClose}>
@@ -468,9 +488,9 @@ function AddDataModal({
         </Button>
       </div>
 
-      {!source.s3_bucket ? (
+      {!source.storage_bucket ? (
         <p className="text-sm text-red-500">
-          No S3 bucket configured for this KB. Edit the registration to add one.
+          No object bucket configured for this collection.
         </p>
       ) : (
         <div className="space-y-4">
@@ -483,12 +503,12 @@ function AddDataModal({
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>Describe content (for AI metadata generation)</Label>
+            <Label>Describe content (optional AI metadata enrichment)</Label>
             <div className="flex gap-2">
               <Input
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="This file contains Q1 2026 financial reports..."
+                placeholder="Q3 2026 platform architecture specifications..."
                 className="flex-1"
               />
               <Button
@@ -498,30 +518,27 @@ function AddDataModal({
                 disabled={!description.trim() || generating}
               >
                 <Sparkles className="mr-1 h-3.5 w-3.5" />
-                {generating ? "Generating..." : "AI Generate"}
+                {generating ? "Generating..." : "AI Metadata"}
               </Button>
             </div>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>
-              Metadata JSON{" "}
-              <span className="text-muted-foreground text-xs font-normal">
-                (Bedrock KB format)
-              </span>
-            </Label>
+            <Label>Metadata JSON</Label>
             <textarea
               value={metadataJson}
               onChange={(e) => setMetadataJson(e.target.value)}
-              placeholder={'{"metadataAttributes": {"category": "...", "topic": "..."}}'}
-              rows={5}
+              placeholder='{"metadataAttributes": {"category": "...", "topic": "..."}}'
+              rows={4}
               className="border-input bg-background w-full rounded-md border px-3 py-2 font-mono text-xs"
             />
           </div>
 
           {result && (
             <p
-              className={`text-sm ${result.startsWith("Error") ? "text-red-500" : "text-green-600"}`}
+              className={`text-sm ${
+                result.startsWith("Error") ? "text-red-500" : "text-emerald-600"
+              }`}
             >
               {result}
             </p>
@@ -531,12 +548,9 @@ function AddDataModal({
             <Button variant="outline" onClick={onClose}>
               Close
             </Button>
-            <Button
-              onClick={handleUpload}
-              disabled={!file || uploading}
-            >
+            <Button onClick={handleUpload} disabled={!file || uploading}>
               <Upload className="mr-1.5 h-4 w-4" />
-              {uploading ? "Uploading..." : "Upload to S3"}
+              {uploading ? "Uploading..." : "Upload to Bucket"}
             </Button>
           </div>
         </div>
@@ -557,7 +571,7 @@ function KBSourceCard({
   setTestResults,
   onTestQuery,
 }: {
-  source: RagSource;
+  source: NimRagSource;
   onDelete: () => void;
   onAddData: () => void;
   testingId: string | null;
@@ -569,7 +583,7 @@ function KBSourceCard({
   onTestQuery: () => void;
 }) {
   return (
-    <div className="bg-card flex flex-col rounded-lg border p-5 shadow-sm">
+    <div className="bg-card flex flex-col rounded-xl border p-5 shadow-sm">
       <div className="mb-3 flex items-start justify-between">
         <div className="flex items-center gap-2">
           <div className="bg-primary/10 text-primary flex h-9 w-9 items-center justify-center rounded-lg">
@@ -583,14 +597,9 @@ function KBSourceCard({
               >
                 {source.status}
               </span>
-              <span className="ml-1.5 inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/30 dark:text-blue-400">
-                {source.knowledge_base_id}
+              <span className="bg-primary/10 text-primary ml-1.5 inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-medium">
+                {source.collection_name}
               </span>
-              {source.region && (
-                <span className="ml-1.5 inline-block rounded bg-gray-50 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-                  {source.region}
-                </span>
-              )}
             </p>
             {source.description && (
               <p className="text-muted-foreground mt-1 text-xs">
@@ -613,7 +622,7 @@ function KBSourceCard({
         <div className="mt-2 flex flex-col gap-2">
           <div className="flex gap-2">
             <Input
-              placeholder="Test query..."
+              placeholder="Test semantic retrieval..."
               value={testQuery}
               onChange={(e) => setTestQuery(e.target.value)}
               className="flex-1"
@@ -641,7 +650,7 @@ function KBSourceCard({
         </div>
       ) : (
         <div className="mt-2 flex gap-2 border-t pt-3">
-          {source.s3_bucket && (
+          {source.storage_bucket && (
             <Button
               variant="ghost"
               size="sm"
@@ -671,7 +680,7 @@ function KBSourceCard({
   );
 }
 
-/* ─── Local RAG Tab ──────────────────────────────────────────────────── */
+/* ─── Vector RAG Tab ─────────────────────────────────────────────────── */
 
 function LocalRagTab() {
   const [sources, setSources] = useState<LocalRagSource[]>([]);
@@ -680,21 +689,24 @@ function LocalRagTab() {
   const [uploading, setUploading] = useState(false);
   const [uploadName, setUploadName] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [embeddingModel, setEmbeddingModel] = useState("titan-embed-text-v2");
+  const [embeddingModel, setEmbeddingModel] = useState<string>(
+    EMBEDDING_MODELS[0].value,
+  );
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
 
-  const [showS3Import, setShowS3Import] = useState(false);
-  const [s3Importing, setS3Importing] = useState(false);
-  const [s3Name, setS3Name] = useState("");
-  const [s3Bucket, setS3Bucket] = useState("");
-  const [s3Prefix, setS3Prefix] = useState("");
-  const [s3Region, setS3Region] = useState("");
-  const [s3ChunkSize, setS3ChunkSize] = useState(1000);
-  const [s3ChunkOverlap, setS3ChunkOverlap] = useState(200);
-  const [s3EmbeddingModel, setS3EmbeddingModel] = useState("titan-embed-text-v2");
-  const [s3Connections, setS3Connections] = useState<
-    { id: string; name: string; bucket_name: string; region: string }[]
+  const [showBucketImport, setShowBucketImport] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [bucketSourceName, setBucketSourceName] = useState("");
+  const [bucketName, setBucketName] = useState("");
+  const [bucketPrefix, setBucketPrefix] = useState("");
+  const [bucketChunkSize, setBucketChunkSize] = useState(1000);
+  const [bucketChunkOverlap, setBucketChunkOverlap] = useState(200);
+  const [bucketEmbeddingModel, setBucketEmbeddingModel] = useState<string>(
+    EMBEDDING_MODELS[0].value,
+  );
+  const [storageConnections, setStorageConnections] = useState<
+    { id: string; name: string; bucket_name: string }[]
   >([]);
 
   const [testQuery, setTestQuery] = useState("");
@@ -702,18 +714,18 @@ function LocalRagTab() {
   const [testingId, setTestingId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${BUILDER_API}/api/storage`)
+    fetch(`${getBuilderApiUrl()}/api/storage`)
       .then((r) => (r.ok ? r.json() : []))
-      .then((data) => setS3Connections(data))
+      .then((data) => setStorageConnections(data))
       .catch(() => {});
   }, []);
 
   const fetchSources = useCallback(async () => {
     try {
-      const res = await fetch(`${BUILDER_API}/api/local-rag`);
+      const res = await fetch(`${getBuilderApiUrl()}/api/local-rag`);
       if (res.ok) setSources(await res.json());
     } catch (e) {
-      console.error("Failed to fetch local RAG sources:", e);
+      console.error("Failed to fetch vector RAG sources:", e);
     } finally {
       setLoading(false);
     }
@@ -733,7 +745,7 @@ function LocalRagTab() {
       formData.append("embedding_model", embeddingModel);
       formData.append("chunk_size", String(chunkSize));
       formData.append("chunk_overlap", String(chunkOverlap));
-      const res = await fetch(`${BUILDER_API}/api/local-rag/upload`, {
+      const res = await fetch(`${getBuilderApiUrl()}/api/local-rag/upload`, {
         method: "POST",
         body: formData,
       });
@@ -753,45 +765,48 @@ function LocalRagTab() {
     }
   };
 
-  const handleS3Import = async () => {
-    if (!s3Name || !s3Bucket) return;
-    setS3Importing(true);
+  const handleBucketImport = async () => {
+    if (!bucketSourceName || !bucketName) return;
+    setImporting(true);
     try {
-      const res = await fetch(`${BUILDER_API}/api/local-rag/s3-import`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: s3Name,
-          bucket_name: s3Bucket,
-          prefix: s3Prefix,
-          aws_region: s3Region,
-          chunk_size: s3ChunkSize,
-          chunk_overlap: s3ChunkOverlap,
-          embedding_model: s3EmbeddingModel,
-        }),
-      });
+      const res = await fetch(
+        `${getBuilderApiUrl()}/api/local-rag/bucket-import`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: bucketSourceName,
+            bucket_name: bucketName,
+            prefix: bucketPrefix,
+            chunk_size: bucketChunkSize,
+            chunk_overlap: bucketChunkOverlap,
+            embedding_model: bucketEmbeddingModel,
+          }),
+        },
+      );
       if (res.ok) {
-        setShowS3Import(false);
-        setS3Name("");
-        setS3Bucket("");
-        setS3Prefix("");
-        setS3Region("");
+        setShowBucketImport(false);
+        setBucketSourceName("");
+        setBucketName("");
+        setBucketPrefix("");
         fetchSources();
       } else {
         const err = await res.json().catch(() => ({}));
-        alert(err.detail || "S3 import failed");
+        alert(err.detail || "Bucket import failed");
       }
     } catch (e) {
-      console.error("S3 import failed:", e);
+      console.error("Bucket import failed:", e);
     } finally {
-      setS3Importing(false);
+      setImporting(false);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this local RAG source?")) return;
+    if (!confirm("Delete this vector RAG source?")) return;
     try {
-      await fetch(`${BUILDER_API}/api/local-rag/${id}`, { method: "DELETE" });
+      await fetch(`${getBuilderApiUrl()}/api/local-rag/${id}`, {
+        method: "DELETE",
+      });
       fetchSources();
     } catch (e) {
       console.error("Failed to delete:", e);
@@ -803,11 +818,11 @@ function LocalRagTab() {
     setTestResults(null);
     try {
       const res = await fetch(
-        `${BUILDER_API}/api/local-rag/${sourceId}/query`,
+        `${getBuilderApiUrl()}/api/local-rag/${sourceId}/query`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: testQuery, k: 3 }),
+          body: JSON.stringify({ query: testQuery, k: 4 }),
         },
       );
       if (res.ok) {
@@ -826,24 +841,24 @@ function LocalRagTab() {
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-muted-foreground text-sm">
-          Local vector search powered by FAISS + Bedrock Embeddings
+          Dense semantic search powered by NVIDIA Embeddings + NVIDIARerank or offline local embeddings
         </p>
         <div className="flex gap-2">
           <Button
             onClick={() => {
-              setShowS3Import(true);
+              setShowBucketImport(true);
               setShowUpload(false);
             }}
             size="sm"
             variant="outline"
           >
             <CloudUpload className="mr-1.5 h-4 w-4" />
-            Import from S3
+            Import from Bucket
           </Button>
           <Button
             onClick={() => {
               setShowUpload(true);
-              setShowS3Import(false);
+              setShowBucketImport(false);
             }}
             size="sm"
           >
@@ -854,9 +869,9 @@ function LocalRagTab() {
       </div>
 
       {showUpload && (
-        <div className="bg-card mb-6 rounded-lg border p-6 shadow-sm">
+        <div className="bg-card mb-6 rounded-xl border p-6 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Upload Document</h2>
+            <h2 className="text-lg font-semibold">Upload &amp; Embed Document</h2>
             <Button
               variant="ghost"
               size="icon"
@@ -871,7 +886,7 @@ function LocalRagTab() {
               <Input
                 value={uploadName}
                 onChange={(e) => setUploadName(e.target.value)}
-                placeholder="Company Docs"
+                placeholder="Product Architecture Guide"
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -879,9 +894,7 @@ function LocalRagTab() {
               <Input
                 type="file"
                 accept=".pdf,.txt,.md,.csv,.docx"
-                onChange={(e) =>
-                  setUploadFile(e.target.files?.[0] ?? null)
-                }
+                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -933,14 +946,16 @@ function LocalRagTab() {
         </div>
       )}
 
-      {showS3Import && (
-        <div className="bg-card mb-6 rounded-lg border p-6 shadow-sm">
+      {showBucketImport && (
+        <div className="bg-card mb-6 rounded-xl border p-6 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Import from AWS S3</h2>
+            <h2 className="text-lg font-semibold">
+              Import from MinIO / S3-Compatible Bucket
+            </h2>
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => setShowS3Import(false)}
+              onClick={() => setShowBucketImport(false)}
             >
               <X className="h-4 w-4" />
             </Button>
@@ -949,27 +964,21 @@ function LocalRagTab() {
             <div className="flex flex-col gap-1.5">
               <Label>Source Name</Label>
               <Input
-                value={s3Name}
-                onChange={(e) => setS3Name(e.target.value)}
-                placeholder="S3 Company Docs"
+                value={bucketSourceName}
+                onChange={(e) => setBucketSourceName(e.target.value)}
+                placeholder="Bucket Knowledge Corpus"
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>S3 Connection</Label>
-              {s3Connections.length > 0 ? (
+              <Label>Object Bucket</Label>
+              {storageConnections.length > 0 ? (
                 <select
-                  value={s3Bucket}
-                  onChange={(e) => {
-                    const conn = s3Connections.find(
-                      (c) => c.bucket_name === e.target.value,
-                    );
-                    setS3Bucket(e.target.value);
-                    if (conn?.region) setS3Region(conn.region);
-                  }}
+                  value={bucketName}
+                  onChange={(e) => setBucketName(e.target.value)}
                   className="border-input bg-background flex h-9 rounded-md border px-3 py-1 text-sm"
                 >
                   <option value="">Select a registered bucket...</option>
-                  {s3Connections.map((c) => (
+                  {storageConnections.map((c) => (
                     <option key={c.id} value={c.bucket_name}>
                       {c.name} (s3://{c.bucket_name})
                     </option>
@@ -977,25 +986,25 @@ function LocalRagTab() {
                 </select>
               ) : (
                 <Input
-                  value={s3Bucket}
-                  onChange={(e) => setS3Bucket(e.target.value)}
-                  placeholder="my-docs-bucket"
+                  value={bucketName}
+                  onChange={(e) => setBucketName(e.target.value)}
+                  placeholder="nimagents-docs"
                 />
               )}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Prefix / Folder (optional)</Label>
               <Input
-                value={s3Prefix}
-                onChange={(e) => setS3Prefix(e.target.value)}
+                value={bucketPrefix}
+                onChange={(e) => setBucketPrefix(e.target.value)}
                 placeholder="documents/2026/"
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Embedding Model</Label>
               <select
-                value={s3EmbeddingModel}
-                onChange={(e) => setS3EmbeddingModel(e.target.value)}
+                value={bucketEmbeddingModel}
+                onChange={(e) => setBucketEmbeddingModel(e.target.value)}
                 className="border-input bg-background flex h-9 rounded-md border px-3 py-1 text-sm"
               >
                 {EMBEDDING_MODELS.map((m) => (
@@ -1009,8 +1018,8 @@ function LocalRagTab() {
               <Label>Chunk Size</Label>
               <Input
                 type="number"
-                value={s3ChunkSize}
-                onChange={(e) => setS3ChunkSize(Number(e.target.value))}
+                value={bucketChunkSize}
+                onChange={(e) => setBucketChunkSize(Number(e.target.value))}
                 min={100}
                 max={10000}
               />
@@ -1019,8 +1028,8 @@ function LocalRagTab() {
               <Label>Chunk Overlap</Label>
               <Input
                 type="number"
-                value={s3ChunkOverlap}
-                onChange={(e) => setS3ChunkOverlap(Number(e.target.value))}
+                value={bucketChunkOverlap}
+                onChange={(e) => setBucketChunkOverlap(Number(e.target.value))}
                 min={0}
                 max={5000}
               />
@@ -1029,15 +1038,15 @@ function LocalRagTab() {
           <div className="mt-4 flex justify-end gap-2">
             <Button
               variant="outline"
-              onClick={() => setShowS3Import(false)}
+              onClick={() => setShowBucketImport(false)}
             >
               Cancel
             </Button>
             <Button
-              onClick={handleS3Import}
-              disabled={!s3Name || !s3Bucket || s3Importing}
+              onClick={handleBucketImport}
+              disabled={!bucketSourceName || !bucketName || importing}
             >
-              {s3Importing ? "Importing..." : "Import & Index"}
+              {importing ? "Importing..." : "Import & Index"}
             </Button>
           </div>
         </div>
@@ -1045,11 +1054,11 @@ function LocalRagTab() {
 
       {loading ? (
         <LoadingSkeleton />
-      ) : sources.length === 0 && !showUpload && !showS3Import ? (
+      ) : sources.length === 0 && !showUpload && !showBucketImport ? (
         <EmptyState
           icon={HardDrive}
-          title="No local RAG sources"
-          subtitle="Upload documents or import from S3 for local vector search"
+          title="No vector knowledge sources yet"
+          subtitle="Upload documents or import from MinIO / S3-compatible object storage"
           actionLabel="Upload Document"
           onAction={() => setShowUpload(true)}
         />
@@ -1063,9 +1072,9 @@ function LocalRagTab() {
               docCount={source.doc_count}
               status={source.status}
               badge={
-                source.source_type === "s3"
-                  ? `s3://${source.s3_bucket || ""}`
-                  : undefined
+                source.source_type === "bucket"
+                  ? `s3://${source.storage_bucket || ""}`
+                  : source.embedding_model
               }
               onDelete={() => handleDelete(source.id)}
               testingId={testingId}
@@ -1100,7 +1109,7 @@ function LexicalRagTab() {
 
   const fetchSources = useCallback(async () => {
     try {
-      const res = await fetch(`${BUILDER_API}/api/lexical-rag`);
+      const res = await fetch(`${getBuilderApiUrl()}/api/lexical-rag`);
       if (res.ok) setSources(await res.json());
     } catch (e) {
       console.error("Failed to fetch lexical RAG sources:", e);
@@ -1122,7 +1131,7 @@ function LexicalRagTab() {
       formData.append("name", uploadName);
       formData.append("chunk_size", String(chunkSize));
       formData.append("chunk_overlap", String(chunkOverlap));
-      const res = await fetch(`${BUILDER_API}/api/lexical-rag/upload`, {
+      const res = await fetch(`${getBuilderApiUrl()}/api/lexical-rag/upload`, {
         method: "POST",
         body: formData,
       });
@@ -1145,7 +1154,7 @@ function LexicalRagTab() {
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this lexical RAG source?")) return;
     try {
-      await fetch(`${BUILDER_API}/api/lexical-rag/${id}`, {
+      await fetch(`${getBuilderApiUrl()}/api/lexical-rag/${id}`, {
         method: "DELETE",
       });
       fetchSources();
@@ -1159,7 +1168,7 @@ function LexicalRagTab() {
     setTestResults(null);
     try {
       const res = await fetch(
-        `${BUILDER_API}/api/lexical-rag/${sourceId}/query`,
+        `${getBuilderApiUrl()}/api/lexical-rag/${sourceId}/query`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1182,7 +1191,7 @@ function LexicalRagTab() {
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-muted-foreground text-sm">
-          Keyword / BM25 search powered by Meilisearch
+          Non-blocking BM25 keyword search powered by Meilisearch
         </p>
         <Button onClick={() => setShowUpload(true)} size="sm">
           <Upload className="mr-1.5 h-4 w-4" />
@@ -1191,11 +1200,9 @@ function LexicalRagTab() {
       </div>
 
       {showUpload && (
-        <div className="bg-card mb-6 rounded-lg border p-6 shadow-sm">
+        <div className="bg-card mb-6 rounded-xl border p-6 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">
-              Upload for Lexical Indexing
-            </h2>
+            <h2 className="text-lg font-semibold">Upload for Lexical Indexing</h2>
             <Button
               variant="ghost"
               size="icon"
@@ -1210,7 +1217,7 @@ function LexicalRagTab() {
               <Input
                 value={uploadName}
                 onChange={(e) => setUploadName(e.target.value)}
-                placeholder="Company Docs"
+                placeholder="API Reference Docs"
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -1218,9 +1225,7 @@ function LexicalRagTab() {
               <Input
                 type="file"
                 accept=".pdf,.txt,.md,.csv,.docx"
-                onChange={(e) =>
-                  setUploadFile(e.target.files?.[0] ?? null)
-                }
+                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -1264,7 +1269,7 @@ function LexicalRagTab() {
         <EmptyState
           icon={TextSearch}
           title="No lexical RAG sources"
-          subtitle="Upload documents for keyword search via Meilisearch"
+          subtitle="Upload documents for BM25 keyword search via Meilisearch"
           actionLabel="Upload Document"
           onAction={() => setShowUpload(true)}
         />
@@ -1326,7 +1331,7 @@ function SourceCard({
   onTestQuery: () => void;
 }) {
   return (
-    <div className="bg-card flex flex-col rounded-lg border p-5 shadow-sm">
+    <div className="bg-card flex flex-col rounded-xl border p-5 shadow-sm">
       <div className="mb-3 flex items-start justify-between">
         <div className="flex items-center gap-2">
           <div className="bg-primary/10 text-primary flex h-9 w-9 items-center justify-center rounded-lg">
@@ -1342,7 +1347,7 @@ function SourceCard({
                 {status}
               </span>
               {badge && (
-                <span className="ml-1.5 inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/30 dark:text-blue-400">
+                <span className="bg-primary/10 text-primary ml-1.5 inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-medium">
                   {badge}
                 </span>
               )}
@@ -1424,10 +1429,10 @@ function EmptyState({
   onAction: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center py-20">
+    <div className="flex flex-col items-center justify-center py-20 text-center">
       <Icon className="text-muted-foreground mb-4 h-16 w-16" />
       <h2 className="mb-2 text-lg font-semibold">{title}</h2>
-      <p className="text-muted-foreground mb-6 text-sm">{subtitle}</p>
+      <p className="text-muted-foreground mb-6 max-w-md text-sm">{subtitle}</p>
       <Button onClick={onAction}>
         <Plus className="mr-1.5 h-4 w-4" />
         {actionLabel}

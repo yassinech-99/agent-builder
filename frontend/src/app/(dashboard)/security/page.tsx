@@ -13,9 +13,7 @@ import {
   AlertTriangle,
   Activity,
 } from "lucide-react";
-
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
+import { getBuilderApiUrl } from "@/lib/runtime-urls";
 
 interface GuardrailRule {
   id: string;
@@ -139,7 +137,7 @@ function RulesTab() {
 
   const fetchRules = useCallback(async () => {
     try {
-      const res = await fetch(`${BUILDER_API}/api/guardrails/rules`);
+      const res = await fetch(`${getBuilderApiUrl()}/api/guardrails/rules`);
       if (res.ok) setRules(await res.json());
     } catch (e) {
       console.error("Failed to fetch rules:", e);
@@ -159,10 +157,11 @@ function RulesTab() {
   };
 
   const handleSave = async () => {
+    const base = getBuilderApiUrl();
     const method = editingId ? "PUT" : "POST";
     const url = editingId
-      ? `${BUILDER_API}/api/guardrails/rules/${editingId}`
-      : `${BUILDER_API}/api/guardrails/rules`;
+      ? `${base}/api/guardrails/rules/${editingId}`
+      : `${base}/api/guardrails/rules`;
     try {
       const res = await fetch(url, {
         method,
@@ -196,7 +195,7 @@ function RulesTab() {
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this guardrail rule?")) return;
     try {
-      await fetch(`${BUILDER_API}/api/guardrails/rules/${id}`, { method: "DELETE" });
+      await fetch(`${getBuilderApiUrl()}/api/guardrails/rules/${id}`, { method: "DELETE" });
       fetchRules();
     } catch (e) {
       console.error("Failed to delete rule:", e);
@@ -205,7 +204,7 @@ function RulesTab() {
 
   const handleToggle = async (rule: GuardrailRule) => {
     try {
-      await fetch(`${BUILDER_API}/api/guardrails/rules/${rule.id}`, {
+      await fetch(`${getBuilderApiUrl()}/api/guardrails/rules/${rule.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...rule, enabled: !rule.enabled }),
@@ -377,7 +376,7 @@ function MonitorTab() {
 
   const fetchEvents = useCallback(async () => {
     try {
-      const res = await fetch(`${BUILDER_API}/api/guardrails/events?limit=100`);
+      const res = await fetch(`${getBuilderApiUrl()}/api/guardrails/events?limit=100`);
       if (res.ok) setEvents(await res.json());
     } catch (e) {
       console.error("Failed to fetch events:", e);

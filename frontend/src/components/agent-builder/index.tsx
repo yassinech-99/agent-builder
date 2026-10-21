@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { useAgentConfig } from "@/providers/AgentConfig";
 import { createClient } from "@/providers/client";
 import { getApiKey } from "@/lib/api-key";
+import { getRuntimeApiUrl } from "@/lib/runtime-urls";
 import { StepBasics } from "./step-basics";
+import { StepRag } from "./step-rag";
 import { StepPrebuiltTools } from "./step-prebuilt-tools";
 import { StepMCPServers } from "./step-mcp-servers";
 import { StepReview } from "./step-review";
@@ -15,6 +17,7 @@ import {
   ArrowRight,
   Rocket,
   Bot,
+  Database,
   Wrench,
   Server,
   CheckCircle2,
@@ -22,10 +25,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:2024";
-
 const STEPS = [
   { label: "Basics", icon: Bot },
+  { label: "RAG Knowledge", icon: Database },
   { label: "Prebuilt Tools", icon: Wrench },
   { label: "MCP Servers", icon: Server },
   { label: "Review & Deploy", icon: CheckCircle2 },
@@ -40,7 +42,7 @@ export function AgentBuilder({ editId }: { editId?: string } = {}) {
   const deploy = async () => {
     setSaving(true);
     try {
-      const client = createClient(API_URL, getApiKey() ?? undefined);
+      const client = createClient(getRuntimeApiUrl(), getApiKey() ?? undefined);
       const configurable = {
         agent_name: config.agent_name,
         system_prompt: config.system_prompt,
@@ -88,13 +90,13 @@ export function AgentBuilder({ editId }: { editId?: string } = {}) {
 
   return (
     <div className="flex h-full items-center justify-center overflow-auto p-4">
-      <div className="bg-background flex w-full max-w-2xl flex-col rounded-lg border shadow-lg">
+      <div className="bg-background flex w-full max-w-2xl flex-col rounded-xl border shadow-lg">
         <div className="flex flex-col gap-2 border-b p-6">
           <h1 className="text-xl font-semibold tracking-tight">
-            {editId ? "Edit Agent" : "New Agent"}
+            {editId ? "Edit Agent" : "New nimAgents Assistant"}
           </h1>
           <p className="text-muted-foreground text-sm">
-            Configure your AI agent with tools and deploy it.
+            Configure your agent with NVIDIA NIM models, hybrid RAG, and MCP tools.
           </p>
 
           <div className="mt-4 flex gap-1">
@@ -122,9 +124,10 @@ export function AgentBuilder({ editId }: { editId?: string } = {}) {
 
         <div className="min-h-[300px] p-6">
           {step === 0 && <StepBasics />}
-          {step === 1 && <StepPrebuiltTools />}
-          {step === 2 && <StepMCPServers />}
-          {step === 3 && <StepReview />}
+          {step === 1 && <StepRag />}
+          {step === 2 && <StepPrebuiltTools />}
+          {step === 3 && <StepMCPServers />}
+          {step === 4 && <StepReview />}
         </div>
 
         <div className="flex items-center justify-between border-t p-4">

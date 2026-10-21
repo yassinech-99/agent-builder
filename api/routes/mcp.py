@@ -1,4 +1,4 @@
-"""MCP tool discovery endpoint."""
+"""MCP tool discovery endpoint using pooled HTTP/2 client."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger("novagrid.api.mcp")
+logger = logging.getLogger("nimagents.api.mcp")
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
 
@@ -29,20 +29,22 @@ class MCPDiscoverResponse(BaseModel):
 @router.post("/discover", response_model=MCPDiscoverResponse)
 async def discover_mcp_tools(req: MCPDiscoverRequest):
     """Send a JSON-RPC tools/list request to an MCP server and return discovered tools."""
+    from api.app import get_http_client
+
     payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+    client = get_http_client()
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                req.url,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                timeout=30.0,
-            )
-            response.raise_for_status()
+        response = await client.post(
+            req.url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,

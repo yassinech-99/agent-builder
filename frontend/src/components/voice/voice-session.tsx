@@ -3,10 +3,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { getVoiceWsUrl } from "@/lib/runtime-urls";
 import { Mic, MicOff, Send, Volume2 } from "lucide-react";
-
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
 
 export interface VoiceMessage {
   role: "user" | "assistant" | "system";
@@ -14,22 +12,52 @@ export interface VoiceMessage {
   timestamp: number;
 }
 
-export type SessionState = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
+export type SessionState =
+  | "idle"
+  | "connecting"
+  | "listening"
+  | "thinking"
+  | "speaking"
+  | "error";
 
 export function StatusBadge({ state }: { state: SessionState }) {
   const config: Record<SessionState, { label: string; className: string }> = {
-    idle: { label: "Offline", className: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400" },
-    connecting: { label: "Connecting", className: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400" },
-    listening: { label: "Listening", className: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
-    thinking: { label: "Thinking", className: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
-    speaking: { label: "Speaking", className: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400" },
-    error: { label: "Error", className: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
+    idle: {
+      label: "Offline",
+      className: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
+    },
+    connecting: {
+      label: "Connecting",
+      className:
+        "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+    },
+    listening: {
+      label: "Listening",
+      className:
+        "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
+    },
+    thinking: {
+      label: "Thinking",
+      className:
+        "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+    },
+    speaking: {
+      label: "Speaking",
+      className:
+        "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+    },
+    error: {
+      label: "Error",
+      className: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+    },
   };
   const c = config[state];
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${c.className}`}>
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${c.className}`}
+    >
       {state === "listening" && (
-        <span className="mr-1.5 h-2 w-2 animate-pulse rounded-full bg-green-500" />
+        <span className="mr-1.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
       )}
       {c.label}
     </span>
@@ -78,12 +106,27 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
+  const stopMic = useCallback(() => {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "flush_audio" }));
+    }
+    setMicActive(false);
+  }, []);
+
   useEffect(() => {
     return () => {
       stopMic();
       audioContextRef.current?.close().catch(() => {});
     };
-  }, []);
+  }, [stopMic]);
 
   const addMessage = useCallback((role: VoiceMessage["role"], text: string) => {
     setMessages((prev) => [...prev, { role, text, timestamp: Date.now() }]);
@@ -96,27 +139,18 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
       }
       const ctx = audioContextRef.current;
       const buffer = base64ToArrayBuffer(base64Audio);
-      ctx.decodeAudioData(buffer.slice(0)).then((audioBuffer) => {
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(ctx.destination);
-        source.start(0);
-      }).catch(() => {});
+      ctx
+        .decodeAudioData(buffer.slice(0))
+        .then((audioBuffer) => {
+          const source = ctx.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(ctx.destination);
+          source.start(0);
+        })
+        .catch(() => {});
     } catch {
-      // Audio playback not available
+      // Audio playback unavailable
     }
-  }, []);
-
-  const stopMic = useCallback(() => {
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      recorderRef.current.stop();
-    }
-    recorderRef.current = null;
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-    }
-    setMicActive(false);
   }, []);
 
   const startMic = useCallback(async () => {
@@ -152,7 +186,7 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
       setMicActive(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Microphone access denied";
-      setError(`Mic error: ${msg}`);
+      setError(`Microphone unavailable (${msg}) — text input remains active.`);
     }
   }, []);
 
@@ -164,27 +198,17 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
     }
   }, [micActive, stopMic, startMic]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(() => {
     setState("connecting");
     setError(null);
 
-    try {
-      await navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
-        s.getTracks().forEach((t) => t.stop());
-      });
-    } catch {
-      setError("Microphone permission is required for voice mode.");
-      setState("error");
-      return;
-    }
-
-    const wsUrl = BUILDER_API.replace(/^http/, "ws") + "/api/voice/ws";
+    const wsUrl = getVoiceWsUrl();
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setState("listening");
-      addMessage("system", "Voice session started.");
+      addMessage("system", "Connected to nimAgents Voice Gateway.");
     };
 
     ws.onmessage = (event) => {
@@ -208,21 +232,21 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
             break;
         }
       } catch {
-        // ignore
+        // ignore invalid frames
       }
     };
 
     ws.onclose = () => {
       setState("idle");
       wsRef.current = null;
-      stopMic();
+      setMicActive(false);
     };
 
     ws.onerror = () => {
-      setError("WebSocket connection failed");
+      setError("Voice WebSocket connection failed.");
       setState("error");
     };
-  }, [addMessage, playAudioChunk, stopMic]);
+  }, [addMessage, playAudioChunk]);
 
   const disconnect = useCallback(() => {
     stopMic();
@@ -244,16 +268,21 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
     setTextInput("");
   }, [textInput, addMessage]);
 
-  const isConnected = state !== "idle" && state !== "error" && state !== "connecting";
+  const isConnected =
+    state !== "idle" && state !== "error" && state !== "connecting";
 
   const micButton = isConnected && (
     <Button
       variant={micActive ? "destructive" : "outline"}
       size="sm"
       onClick={toggleMic}
-      title={micActive ? "Mute microphone" : "Unmute microphone"}
+      title={micActive ? "Stop & transcribe audio" : "Stream microphone audio"}
     >
-      {micActive ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
+      {micActive ? (
+        <MicOff className="h-3.5 w-3.5" />
+      ) : (
+        <Mic className="h-3.5 w-3.5" />
+      )}
     </Button>
   );
 
@@ -308,9 +337,7 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
           </div>
         )}
 
-        {error && (
-          <p className="text-xs text-red-600">{error}</p>
-        )}
+        {error && <p className="text-xs text-red-600">{error}</p>}
 
         {isConnected && (
           <div className="flex gap-2">
@@ -318,7 +345,7 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
               value={textInput}
               onChange={(e) => setTextInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && sendText()}
-              placeholder="Type to the voice agent..."
+              placeholder="Send a prompt over the voice stream..."
               className="flex-1"
             />
             <Button size="sm" onClick={sendText} disabled={!textInput.trim()}>
@@ -332,14 +359,32 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b px-6 py-2.5">
+        <StatusBadge state={state} />
+        <div className="flex items-center gap-2">
+          {isConnected ? (
+            <Button variant="outline" size="sm" onClick={disconnect}>
+              End Session
+            </Button>
+          ) : (
+            <Button size="sm" onClick={connect} disabled={state === "connecting"}>
+              <Mic className="mr-1.5 h-3.5 w-3.5" />
+              {state === "connecting" ? "Connecting..." : "Connect Session"}
+            </Button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-auto p-6">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
-            <Volume2 className="text-muted-foreground mb-4 h-16 w-16" />
-            <h2 className="mb-2 text-lg font-semibold">Nova 2 Sonic Voice Agent</h2>
+            <Volume2 className="text-primary mb-4 h-16 w-16 opacity-80" />
+            <h2 className="mb-2 text-lg font-semibold">
+              nimAgents Streaming Voice Gateway
+            </h2>
             <p className="text-muted-foreground mb-6 max-w-md text-sm">
-              Start a voice session to interact with your AI agent using natural
-              language. Microphone permission will be requested.
+              Connect a real-time WebSocket session backed by your active NVIDIA
+              NIM model and optional Riva Parakeet ASR / Magpie TTS microservices.
             </p>
             <Button onClick={connect} disabled={state === "connecting"}>
               <Mic className="mr-1.5 h-4 w-4" />
@@ -378,7 +423,7 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
       </div>
 
       {error && (
-        <div className="border-t border-red-200 bg-red-50 px-6 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
+        <div className="border-t border-amber-200 bg-amber-50 px-6 py-2.5 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
           {error}
         </div>
       )}
@@ -391,7 +436,7 @@ export function VoiceSession({ inline = false }: VoiceSessionProps) {
               value={textInput}
               onChange={(e) => setTextInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && sendText()}
-              placeholder="Type a message to the voice agent..."
+              placeholder="Speak with mic or type a message to stream a reply..."
               className="flex-1"
             />
             <Button onClick={sendText} disabled={!textInput.trim()}>

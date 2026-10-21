@@ -18,7 +18,7 @@ import {
   DO_NOT_RENDER_ID_PREFIX,
   ensureToolCallsHaveResponses,
 } from "@/lib/ensure-tool-responses";
-import { NovaGridLogo } from "../icons/grid-agents";
+import { NimAgentsLogo } from "../icons/nim-agents";
 import { TooltipIconButton } from "./tooltip-icon-button";
 import {
   ArrowDown,
@@ -47,9 +47,7 @@ import {
   useArtifactContext,
 } from "./artifact";
 import { detectRiskyInput } from "@/lib/guardrails";
-
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
+import { getBuilderApiUrl, NIMAGENTS_STORAGE } from "@/lib/runtime-urls";
 
 type KnowledgeSource = {
   id: string;
@@ -185,7 +183,7 @@ export function Thread() {
 
   const getKnowledgeStorageKey = useCallback(
     (id: string | null | undefined) =>
-      `novagrid:knowledge:${assistantId || "agent"}:${id || "__new__"}`,
+      `${NIMAGENTS_STORAGE.knowledgePrefix}:${assistantId || "agent"}:${id || "__new__"}`,
     [assistantId],
   );
 
@@ -386,11 +384,12 @@ export function Thread() {
     if (!knowledgeModalOpen) return;
     const fetchSources = async () => {
       setSourcesLoading(true);
+      const base = getBuilderApiUrl();
       try {
         const [vectorRes, localRes, lexicalRes] = await Promise.all([
-          fetch(`${BUILDER_API}/api/rag`),
-          fetch(`${BUILDER_API}/api/local-rag`),
-          fetch(`${BUILDER_API}/api/lexical-rag`),
+          fetch(`${base}/api/rag`),
+          fetch(`${base}/api/local-rag`),
+          fetch(`${base}/api/lexical-rag`),
         ]);
         if (vectorRes.ok) {
           const vectorData = await vectorRes.json();
@@ -522,7 +521,7 @@ export function Thread() {
             lexical_rag_source_ids: effectiveKnowledge.lexical,
           },
         },
-        streamMode: ["values"],
+        streamMode: ["values", "messages-tuple", "custom"],
         streamSubgraphs: true,
         streamResumable: true,
         optimisticValues: (prev) => ({
@@ -565,7 +564,7 @@ export function Thread() {
           lexical_rag_source_ids: effectiveKnowledge.lexical,
         },
       },
-      streamMode: ["values"],
+      streamMode: ["values", "messages-tuple", "custom"],
       streamSubgraphs: true,
       streamResumable: true,
     });
@@ -641,7 +640,7 @@ export function Thread() {
     <div className="flex h-full w-full overflow-hidden">
       <div className="relative hidden lg:flex">
         <motion.div
-          className="absolute z-20 h-full overflow-hidden border-r bg-white"
+          className="bg-background absolute z-20 h-full overflow-hidden border-r"
           style={{ width: 300 }}
           animate={{ x: chatHistoryOpen ? 0 : -300 }}
           initial={{ x: -300 }}
@@ -716,9 +715,9 @@ export function Thread() {
                     damping: 30,
                   }}
                 >
-                  <NovaGridLogo width={28} height={28} />
+                  <NimAgentsLogo width={28} height={28} className="text-primary" />
                   <span className="text-xl font-semibold tracking-tight">
-                    NovaGrid
+                    nimAgents
                   </span>
                 </motion.button>
               </div>
@@ -784,9 +783,9 @@ export function Thread() {
                 <div className="bg-background sticky bottom-0 flex flex-col items-center gap-8">
                   {!chatStarted && (
                     <div className="flex items-center gap-3">
-                      <NovaGridLogo className="text-primary h-8 w-8 flex-shrink-0" />
+                      <NimAgentsLogo className="text-primary h-8 w-8 flex-shrink-0" />
                       <h1 className="text-2xl font-semibold tracking-tight">
-                        NovaGrid Agents
+                        nimAgents
                       </h1>
                     </div>
                   )}
@@ -1007,7 +1006,7 @@ export function Thread() {
             </div>
             <div className="grid gap-4 px-5 py-4 md:grid-cols-3">
               <div className="rounded-lg border p-4">
-                <h3 className="text-sm font-medium">Bedrock Knowledge Bases</h3>
+                <h3 className="text-sm font-medium">NVIDIA NIM RAG Collections</h3>
                 <div className="mt-2 max-h-64 space-y-2 overflow-auto pr-1">
                   {sourcesLoading && (
                     <p className="text-muted-foreground text-xs">

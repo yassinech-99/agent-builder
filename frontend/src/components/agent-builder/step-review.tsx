@@ -1,195 +1,88 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React from "react";
 import { useAgentConfig } from "@/providers/AgentConfig";
-
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
-
-interface ModelSummary {
-  id: string;
-  name: string;
-  provider: string;
-  model_name: string;
-}
 
 export function StepReview() {
   const { config } = useAgentConfig();
-  const [modelMeta, setModelMeta] = useState<ModelSummary | null>(null);
-
-  const totalMcpTools = config.mcp_servers.reduce(
-    (sum, s) => sum + s.selected_tools.length,
-    0,
-  );
-
-  const prebuiltCount = config.enabled_prebuilt_tools.length;
-
-  useEffect(() => {
-    if (!config.model_id) {
-      setModelMeta(null);
-      return;
-    }
-    const loadModel = async () => {
-      try {
-        const res = await fetch(`${BUILDER_API}/api/models`);
-        if (!res.ok) return;
-        const data = (await res.json()) as ModelSummary[];
-        setModelMeta(data.find((m) => m.id === config.model_id) || null);
-      } catch {
-        setModelMeta(null);
-      }
-    };
-    loadModel();
-  }, [config.model_id]);
+  const totalRag =
+    (config.rag_source_ids?.length ?? 0) +
+    (config.local_rag_source_ids?.length ?? 0) +
+    (config.lexical_rag_source_ids?.length ?? 0);
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-          Agent Name
-        </span>
-        <span className="text-sm font-medium">
-          {config.agent_name || "Unnamed Agent"}
-        </span>
-      </div>
+    <div className="space-y-5">
+      <p className="text-muted-foreground text-sm">
+        Verify your nimAgents configuration before deploying.
+      </p>
 
-      <div className="flex flex-col gap-1">
-        <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-          System Prompt
-        </span>
-        <span className="whitespace-pre-wrap text-sm">
-          {config.system_prompt || "(default prompt)"}
-        </span>
-      </div>
+      <div className="bg-card divide-y rounded-xl border shadow-xs">
+        <div className="p-4">
+          <p className="text-muted-foreground text-xs font-medium uppercase">
+            Agent Name
+          </p>
+          <p className="mt-1 font-medium">{config.agent_name || "(unnamed)"}</p>
+        </div>
 
-      <div className="flex flex-col gap-1">
-        <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-          Prebuilt Tools ({prebuiltCount})
-        </span>
-        {prebuiltCount > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {config.enabled_prebuilt_tools.map((id) => (
-              <span
-                key={id}
-                className="bg-primary/10 text-primary rounded-full px-3 py-1 text-xs font-medium"
-              >
-                {id}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <span className="text-muted-foreground text-sm">None selected</span>
-        )}
-      </div>
+        <div className="p-4">
+          <p className="text-muted-foreground text-xs font-medium uppercase">
+            Model Endpoint
+          </p>
+          <p className="mt-1 font-mono text-sm">
+            {config.model_id || "Default Workspace Model"}
+          </p>
+        </div>
 
-      {config.model_id && (
-        <div className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-            Model
-          </span>
-          <span className="text-sm font-medium">
-            {modelMeta
-              ? modelMeta.name
-              : config.model_id}
-          </span>
-          {modelMeta && (
-            <span className="text-muted-foreground text-xs">
-              {modelMeta.provider} / {modelMeta.model_name}
-            </span>
+        <div className="p-4">
+          <p className="text-muted-foreground text-xs font-medium uppercase">
+            System Prompt
+          </p>
+          <p className="mt-1 whitespace-pre-wrap text-sm">
+            {config.system_prompt || "(default system prompt)"}
+          </p>
+        </div>
+
+        <div className="p-4">
+          <p className="text-muted-foreground text-xs font-medium uppercase">
+            Prebuilt Tools ({config.enabled_prebuilt_tools.length})
+          </p>
+          <p className="mt-1 text-sm">
+            {config.enabled_prebuilt_tools.length > 0
+              ? config.enabled_prebuilt_tools.join(", ")
+              : "None"}
+          </p>
+        </div>
+
+        <div className="p-4">
+          <p className="text-muted-foreground text-xs font-medium uppercase">
+            MCP Servers ({config.mcp_servers.length})
+          </p>
+          {config.mcp_servers.length === 0 ? (
+            <p className="text-muted-foreground mt-1 text-sm">None</p>
+          ) : (
+            <ul className="mt-1 space-y-1">
+              {config.mcp_servers.map((s, i) => (
+                <li key={i} className="text-sm">
+                  <span className="font-medium">{s.url}</span>
+                  <span className="text-muted-foreground ml-2 text-xs">
+                    ({s.selected_tools.length} tools)
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
-      )}
 
-      {config.rag_source_ids.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-            Bedrock Knowledge Bases ({config.rag_source_ids.length})
-          </span>
-          <div className="flex flex-wrap gap-2">
-            {config.rag_source_ids.map((id) => (
-              <span
-                key={id}
-                className="bg-primary/10 text-primary rounded-full px-3 py-1 text-xs font-medium"
-              >
-                {id.slice(0, 8)}…
-              </span>
-            ))}
-          </div>
+        <div className="p-4">
+          <p className="text-muted-foreground text-xs font-medium uppercase">
+            RAG Knowledge Sources ({totalRag})
+          </p>
+          <p className="mt-1 text-sm">
+            {totalRag === 0
+              ? "None"
+              : `${config.local_rag_source_ids.length} vector · ${config.lexical_rag_source_ids.length} lexical · ${config.rag_source_ids.length} NIM RAG`}
+          </p>
         </div>
-      )}
-
-      {config.local_rag_source_ids.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-            Local RAG Sources ({config.local_rag_source_ids.length})
-          </span>
-          <div className="flex flex-wrap gap-2">
-            {config.local_rag_source_ids.map((id) => (
-              <span
-                key={id}
-                className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
-              >
-                {id.slice(0, 8)}…
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {config.lexical_rag_source_ids.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-            Lexical RAG Sources ({config.lexical_rag_source_ids.length})
-          </span>
-          <div className="flex flex-wrap gap-2">
-            {config.lexical_rag_source_ids.map((id) => (
-              <span
-                key={id}
-                className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 rounded-full px-3 py-1 text-xs font-medium"
-              >
-                {id.slice(0, 8)}…
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1">
-        <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-          MCP Servers ({config.mcp_servers.length})
-        </span>
-        {config.mcp_servers.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            {config.mcp_servers.map((srv, i) => (
-              <div key={i} className="rounded-md border p-3">
-                <p className="truncate text-sm font-medium">{srv.url}</p>
-                <p className="text-muted-foreground text-xs">
-                  {srv.selected_tools.join(", ")}
-                </p>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <span className="text-muted-foreground text-sm">None added</span>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <span className="text-muted-foreground text-xs font-medium uppercase tracking-wider">
-          Voice Mode
-        </span>
-        <span className="text-sm font-medium">
-          {config.voice_enabled ? "Enabled (Nova 2 Sonic)" : "Disabled"}
-        </span>
-      </div>
-
-      <div className="bg-muted/50 mt-2 rounded-lg p-4">
-        <p className="text-sm">
-          Total tools:{" "}
-          <span className="font-semibold">
-            {prebuiltCount + totalMcpTools}
-          </span>
-        </p>
       </div>
     </div>
   );

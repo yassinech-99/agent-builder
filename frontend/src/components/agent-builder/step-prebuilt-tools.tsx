@@ -2,11 +2,9 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useAgentConfig } from "@/providers/AgentConfig";
+import { getBuilderApiUrl } from "@/lib/runtime-urls";
 import { Input } from "@/components/ui/input";
 import { ChevronDown, ChevronUp, Search } from "lucide-react";
-
-const BUILDER_API =
-  process.env.NEXT_PUBLIC_BUILDER_API_URL || "http://localhost:8100";
 
 interface ToolConfigField {
   key: string;
@@ -63,7 +61,7 @@ export function StepPrebuiltTools() {
 
   const fetchCatalog = useCallback(async () => {
     try {
-      const res = await fetch(`${BUILDER_API}/api/tools/catalog`);
+      const res = await fetch(`${getBuilderApiUrl()}/api/tools/catalog`);
       if (res.ok) setCatalog(await res.json());
     } catch {
       /* API not available — will show empty */

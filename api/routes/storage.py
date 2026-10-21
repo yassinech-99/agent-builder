@@ -1,98 +1,209 @@
-"""S3 connection CRUD endpoints."""
+"""Open S3-compatible object storage CRUD & connectivity endpoints powered by MinIO."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import uuid
+from typing import Any
+from urllib.parse import urlparse
 
-import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
 from fastapi import APIRouter, HTTPException
+from minio import Minio
+from minio.error import S3Error
 from pydantic import BaseModel, Field
 
-from api.db import get_db
+from api.db import get_db, mask_secret
 
-logger = logging.getLogger("novagrid.api.storage")
+logger = logging.getLogger("nimagents.api.storage")
 router = APIRouter(prefix="/api/storage", tags=["storage"])
 
+DEFAULT_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
 
-class S3ConnectionCreate(BaseModel):
+
+class StorageConnectionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
+    endpoint_url: str = Field(default=DEFAULT_MINIO_ENDPOINT, max_length=512)
     bucket_name: str = Field(..., min_length=1, max_length=255)
-    region: str = ""
-    access_key_id: str = ""
-    secret_access_key: str = ""
+    region: str = Field(default="us-east-1", max_length=64)
+    access_key: str = Field(default="", max_length=256)
+    secret_key: str = Field(default="", max_length=256)
+    skip_validation: bool = False
 
 
-class S3ConnectionOut(S3ConnectionCreate):
+class StorageConnectionOut(BaseModel):
     id: str
+    name: str
+    endpoint_url: str
+    bucket_name: str
+    region: str
+    access_key: str = ""
+    access_key_masked: str = ""
+    secret_key: str = ""
+    secret_key_masked: str = ""
+    has_credentials: bool = False
+    secure: bool = False
     created_at: str
 
 
-def _s3_client(region: str = "", access_key_id: str = "", secret_access_key: str = ""):
-    kwargs: dict = {}
-    if region:
-        kwargs["region_name"] = region
-    if access_key_id and secret_access_key:
-        kwargs["aws_access_key_id"] = access_key_id
-        kwargs["aws_secret_access_key"] = secret_access_key
-    return boto3.client("s3", **kwargs)
+def _parse_minio_endpoint(raw_url: str) -> tuple[str, bool]:
+    cleaned = (raw_url or DEFAULT_MINIO_ENDPOINT).strip()
+    if "://" in cleaned:
+        parsed = urlparse(cleaned)
+        host = parsed.netloc or parsed.path
+        secure = parsed.scheme.lower() == "https"
+        return host, secure
+    return cleaned, False
 
 
-@router.get("", response_model=list[S3ConnectionOut])
+def build_minio_client(
+    endpoint_url: str = "",
+    access_key: str = "",
+    secret_key: str = "",
+    region: str = "",
+) -> Minio:
+    host, secure = _parse_minio_endpoint(endpoint_url)
+    resolved_access = access_key.strip() or os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+    resolved_secret = secret_key.strip() or os.getenv("MINIO_SECRET_KEY", "minioadmin")
+    return Minio(
+        endpoint=host,
+        access_key=resolved_access,
+        secret_key=resolved_secret,
+        secure=secure,
+        region=region.strip() or None,
+    )
+
+
+def build_minio_client_for_bucket(bucket_name: str) -> Minio:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM storage_connections WHERE bucket_name = ? ORDER BY created_at DESC LIMIT 1",
+            (bucket_name,),
+        ).fetchone()
+    if row:
+        return build_minio_client(
+            endpoint_url=row["endpoint_url"],
+            access_key=row["access_key"],
+            secret_key=row["secret_key"],
+            region=row["region"],
+        )
+    return build_minio_client()
+
+
+def _serialize_storage_row(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    raw_access = data.pop("access_key", "") or ""
+    raw_secret = data.pop("secret_key", "") or ""
+    return {
+        **data,
+        "access_key": "",
+        "access_key_masked": mask_secret(raw_access),
+        "secret_key": "",
+        "secret_key_masked": mask_secret(raw_secret),
+        "has_credentials": bool(raw_access.strip() and raw_secret.strip()),
+        "secure": bool(data.get("secure", 0)),
+    }
+
+
+@router.get("", response_model=list[StorageConnectionOut])
 def list_connections():
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM s3_connections ORDER BY created_at DESC"
+            "SELECT * FROM storage_connections ORDER BY created_at DESC"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [_serialize_storage_row(r) for r in rows]
 
 
-@router.post("", response_model=S3ConnectionOut, status_code=201)
-def create_connection(body: S3ConnectionCreate):
-    try:
-        client = _s3_client(body.region, body.access_key_id, body.secret_access_key)
-        client.head_bucket(Bucket=body.bucket_name)
-    except NoCredentialsError:
-        raise HTTPException(status_code=400, detail="AWS credentials not found")
-    except ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code == "404":
-            raise HTTPException(status_code=400, detail=f"Bucket '{body.bucket_name}' not found")
-        if code == "403":
-            raise HTTPException(status_code=400, detail=f"Access denied to bucket '{body.bucket_name}'")
-        raise HTTPException(status_code=400, detail=str(e))
+@router.post("", response_model=StorageConnectionOut, status_code=201)
+async def create_connection(body: StorageConnectionCreate):
+    host, secure = _parse_minio_endpoint(body.endpoint_url)
+    normalized_url = f"{'https' if secure else 'http'}://{host}"
+
+    if not body.skip_validation:
+        try:
+            client = build_minio_client(
+                endpoint_url=normalized_url,
+                access_key=body.access_key,
+                secret_key=body.secret_key,
+                region=body.region,
+            )
+            exists = await asyncio.to_thread(client.bucket_exists, body.bucket_name)
+            if not exists:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Bucket '{body.bucket_name}' does not exist at {normalized_url}",
+                )
+        except HTTPException:
+            raise
+        except S3Error as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Object storage rejected request ({exc.code}): {exc.message}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not connect to object storage at {normalized_url}: {exc}",
+            ) from exc
 
     conn_id = str(uuid.uuid4())
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO s3_connections (id, name, bucket_name, region, access_key_id, secret_access_key)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (conn_id, body.name, body.bucket_name, body.region, body.access_key_id, body.secret_access_key),
+            """INSERT INTO storage_connections
+               (id, name, endpoint_url, bucket_name, region, access_key, secret_key, secure)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                conn_id,
+                body.name.strip(),
+                normalized_url,
+                body.bucket_name.strip(),
+                body.region.strip(),
+                body.access_key.strip(),
+                body.secret_key.strip(),
+                int(secure),
+            ),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM s3_connections WHERE id = ?", (conn_id,)).fetchone()
-    return dict(row)
+        row = conn.execute(
+            "SELECT * FROM storage_connections WHERE id = ?", (conn_id,)
+        ).fetchone()
+    return _serialize_storage_row(row)
 
 
 @router.delete("/{connection_id}")
 def delete_connection(connection_id: str):
     with get_db() as conn:
-        conn.execute("DELETE FROM s3_connections WHERE id = ?", (connection_id,))
+        conn.execute("DELETE FROM storage_connections WHERE id = ?", (connection_id,))
         conn.commit()
     return {"ok": True}
 
 
 @router.post("/{connection_id}/test")
-def test_connection(connection_id: str):
+async def test_connection(connection_id: str):
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM s3_connections WHERE id = ?", (connection_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM storage_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Connection not found")
-    s3conn = dict(row)
+    record = dict(row)
     try:
-        client = _s3_client(s3conn["region"], s3conn["access_key_id"], s3conn["secret_access_key"])
-        client.head_bucket(Bucket=s3conn["bucket_name"])
-        return {"ok": True, "message": f"Successfully connected to s3://{s3conn['bucket_name']}"}
-    except Exception as e:
-        return {"ok": False, "message": str(e)}
+        client = build_minio_client(
+            endpoint_url=record["endpoint_url"],
+            access_key=record["access_key"],
+            secret_key=record["secret_key"],
+            region=record["region"],
+        )
+        exists = await asyncio.to_thread(client.bucket_exists, record["bucket_name"])
+        if not exists:
+            return {
+                "ok": False,
+                "message": f"Bucket '{record['bucket_name']}' was not found on {record['endpoint_url']}",
+            }
+        return {
+            "ok": True,
+            "message": f"Connected to {record['endpoint_url']} · bucket '{record['bucket_name']}' is ready",
+        }
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
