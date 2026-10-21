@@ -23,6 +23,8 @@ export interface AgentConfig {
   tool_loading_mode?: ToolLoadingMode;
   enable_programmatic_tools?: boolean;
   approval_required_tools?: string[];
+  enabled_skill_ids?: string[];
+  session_memory?: string;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -39,6 +41,8 @@ const DEFAULT_CONFIG: AgentConfig = {
   tool_loading_mode: "auto",
   enable_programmatic_tools: true,
   approval_required_tools: [],
+  enabled_skill_ids: [],
+  session_memory: "",
 };
 
 interface AgentConfigContextType {

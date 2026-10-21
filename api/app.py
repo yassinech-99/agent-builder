@@ -29,6 +29,7 @@ from api.db import init_db
 from api.db_async import close_async_engines
 from api.middleware.admission import AdmissionMiddleware
 from api.routes import (
+    context as context_router,
     guardrails,
     lexical_rag,
     local_rag,
@@ -36,6 +37,7 @@ from api.routes import (
     models,
     rag,
     scale,
+    skills as skills_router,
     storage,
     tools as tools_router,
     voice,
@@ -136,6 +138,8 @@ app.include_router(storage.router)
 app.include_router(guardrails.router)
 app.include_router(scale.router)
 app.include_router(tools_router.router)
+app.include_router(skills_router.router)
+app.include_router(context_router.router)
 
 
 @app.get("/")

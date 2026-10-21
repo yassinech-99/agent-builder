@@ -161,6 +161,63 @@ CREATE TABLE IF NOT EXISTS custom_tools (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS context_artifacts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    thread_id TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL DEFAULT 'tool',
+    content_type TEXT NOT NULL DEFAULT 'text/plain',
+    byte_size INTEGER DEFAULT 0,
+    token_count INTEGER DEFAULT 0,
+    storage_uri TEXT NOT NULL DEFAULT '',
+    inline_content TEXT NOT NULL DEFAULT '',
+    structural_summary TEXT NOT NULL DEFAULT '',
+    preview_text TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS agent_skills (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'engineering',
+    version TEXT NOT NULL DEFAULT '1.0.0',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+    body_markdown TEXT NOT NULL DEFAULT '',
+    resources_json TEXT NOT NULL DEFAULT '{}',
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS session_compactions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    thread_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL DEFAULT 'nimAgents Assistant',
+    prefix_hash TEXT NOT NULL DEFAULT '',
+    static_prefix_tokens INTEGER DEFAULT 0,
+    session_prefix_tokens INTEGER DEFAULT 0,
+    dynamic_tail_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    context_window INTEGER DEFAULT 131072,
+    kv_cache_hit_pct DOUBLE PRECISION DEFAULT 0.0,
+    deferred_tools_count INTEGER DEFAULT 0,
+    active_skills_json TEXT NOT NULL DEFAULT '[]',
+    offloaded_artifacts_count INTEGER DEFAULT 0,
+    cleared_thinking_tokens INTEGER DEFAULT 0,
+    cleared_tool_tokens INTEGER DEFAULT 0,
+    compaction_count INTEGER DEFAULT 0,
+    checkpoint_summary TEXT NOT NULL DEFAULT '',
+    pre_compact_facts_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable & FORCE Row-Level Security across every multi-tenant table
 DO $$
 DECLARE
@@ -176,7 +233,10 @@ BEGIN
         'guardrail_events',
         'background_jobs',
         'usage_ledger',
-        'custom_tools'
+        'custom_tools',
+        'context_artifacts',
+        'agent_skills',
+        'session_compactions'
     ]
     LOOP
         EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%I_tenant_ws ON %I (tenant_id, workspace_id)', tbl, tbl);

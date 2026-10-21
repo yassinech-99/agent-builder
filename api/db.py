@@ -212,6 +212,69 @@ CREATE TABLE IF NOT EXISTS custom_tools (
 );
 """
 
+CREATE_CONTEXT_ARTIFACTS = """
+CREATE TABLE IF NOT EXISTS context_artifacts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    thread_id TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL DEFAULT 'tool',
+    content_type TEXT NOT NULL DEFAULT 'text/plain',
+    byte_size INTEGER DEFAULT 0,
+    token_count INTEGER DEFAULT 0,
+    storage_uri TEXT NOT NULL DEFAULT '',
+    inline_content TEXT NOT NULL DEFAULT '',
+    structural_summary TEXT NOT NULL DEFAULT '',
+    preview_text TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_AGENT_SKILLS = """
+CREATE TABLE IF NOT EXISTS agent_skills (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'engineering',
+    version TEXT NOT NULL DEFAULT '1.0.0',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+    body_markdown TEXT NOT NULL DEFAULT '',
+    resources_json TEXT NOT NULL DEFAULT '{}',
+    enabled BOOLEAN DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_SESSION_COMPACTIONS = """
+CREATE TABLE IF NOT EXISTS session_compactions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    thread_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL DEFAULT 'nimAgents Assistant',
+    prefix_hash TEXT NOT NULL DEFAULT '',
+    static_prefix_tokens INTEGER DEFAULT 0,
+    session_prefix_tokens INTEGER DEFAULT 0,
+    dynamic_tail_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    context_window INTEGER DEFAULT 131072,
+    kv_cache_hit_pct REAL DEFAULT 0.0,
+    deferred_tools_count INTEGER DEFAULT 0,
+    active_skills_json TEXT NOT NULL DEFAULT '[]',
+    offloaded_artifacts_count INTEGER DEFAULT 0,
+    cleared_thinking_tokens INTEGER DEFAULT 0,
+    cleared_tool_tokens INTEGER DEFAULT 0,
+    compaction_count INTEGER DEFAULT 0,
+    checkpoint_summary TEXT NOT NULL DEFAULT '',
+    pre_compact_facts_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 TENANT_SCOPED_TABLES = (
     "models",
     "rag_sources",
@@ -223,6 +286,9 @@ TENANT_SCOPED_TABLES = (
     "background_jobs",
     "usage_ledger",
     "custom_tools",
+    "context_artifacts",
+    "agent_skills",
+    "session_compactions",
 )
 
 _MIGRATE_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -302,6 +368,9 @@ def init_db() -> None:
             CREATE_BACKGROUND_JOBS,
             CREATE_USAGE_LEDGER,
             CREATE_CUSTOM_TOOLS,
+            CREATE_CONTEXT_ARTIFACTS,
+            CREATE_AGENT_SKILLS,
+            CREATE_SESSION_COMPACTIONS,
         ):
             conn.execute(ddl)
 
