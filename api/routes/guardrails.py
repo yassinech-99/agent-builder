@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import logging
 import re
+import threading
 import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api.core.tenancy import get_tenant_context
-from api.db import ensure_tenant_guardrails_seeded, get_db, mask_secret
+from api.db import ensure_tenant_guardrails_seeded, get_db, get_db_path, mask_secret
 
 logger = logging.getLogger("nimagents.api.guardrails")
 router = APIRouter(prefix="/api/guardrails", tags=["guardrails"])
+_GUARDRAIL_DB_LOCK = threading.Lock()
+_COMPILED_RULES_CACHE: dict[tuple[str, str], list[tuple[dict, re.Pattern[str]]]] = {}
+
+
+def _invalidate_rules_cache(tenant_id: str) -> None:
+    _COMPILED_RULES_CACHE.pop((str(get_db_path()), tenant_id), None)
 
 
 class RuleCreate(BaseModel):
@@ -108,6 +116,7 @@ def create_rule(body: RuleCreate):
             "SELECT * FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
             (rule_id, ctx.tenant_id),
         ).fetchone()
+    _invalidate_rules_cache(ctx.tenant_id)
     return dict(row)
 
 
@@ -138,6 +147,7 @@ def update_rule(rule_id: str, body: RuleCreate):
             "SELECT * FROM guardrail_rules WHERE id = ? AND tenant_id = ?",
             (rule_id, ctx.tenant_id),
         ).fetchone()
+    _invalidate_rules_cache(ctx.tenant_id)
     return dict(row)
 
 
@@ -150,31 +160,45 @@ def delete_rule(rule_id: str):
             (rule_id, ctx.tenant_id),
         )
         conn.commit()
+    _invalidate_rules_cache(ctx.tenant_id)
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"ok": True}
 
 
-@router.post("/check", response_model=CheckResponse)
-def check_text(body: CheckRequest):
-    ctx = get_tenant_context()
-    with get_db() as conn:
-        ensure_tenant_guardrails_seeded(conn, ctx.tenant_id)
-        rules = conn.execute(
+def _get_compiled_tenant_rules(tenant_id: str) -> list[tuple[dict, re.Pattern[str]]]:
+    cache_key = (str(get_db_path()), tenant_id)
+    cached = _COMPILED_RULES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    with _GUARDRAIL_DB_LOCK, get_db() as conn:
+        ensure_tenant_guardrails_seeded(conn, tenant_id)
+        rows = conn.execute(
             "SELECT * FROM guardrail_rules WHERE tenant_id = ? AND enabled = 1",
-            (ctx.tenant_id,),
+            (tenant_id,),
         ).fetchall()
+    compiled: list[tuple[dict, re.Pattern[str]]] = []
+    for r in rows:
+        pat = r["pattern"]
+        if not pat:
+            continue
+        try:
+            compiled.append((dict(r), re.compile(pat)))
+        except re.error:
+            continue
+    _COMPILED_RULES_CACHE[cache_key] = compiled
+    return compiled
+
+
+@router.post("/check", response_model=CheckResponse)
+async def check_text(body: CheckRequest):
+    ctx = get_tenant_context()
+    compiled_rules = await asyncio.to_thread(_get_compiled_tenant_rules, ctx.tenant_id)
 
     hits: list[CheckHit] = []
     redacted_text = body.text
-    for rule in rules:
-        pattern = rule["pattern"]
-        if not pattern:
-            continue
-        try:
-            match = re.search(pattern, body.text)
-        except re.error:
-            continue
+    for rule, regex in compiled_rules:
+        match = regex.search(body.text)
         if match:
             raw_match = match.group()[:200]
             display_match = (
@@ -189,10 +213,17 @@ def check_text(body: CheckRequest):
             )
             hits.append(hit)
             if rule["action"] in ("redact", "block"):
-                redacted_text = re.sub(pattern, "[REDACTED]", redacted_text)
+                redacted_text = regex.sub("[REDACTED]", redacted_text)
 
     if hits:
-        _log_events(hits, body.thread_id, body.assistant_id, ctx.tenant_id, ctx.workspace_id)
+        await asyncio.to_thread(
+            _log_events,
+            hits,
+            body.thread_id,
+            body.assistant_id,
+            ctx.tenant_id,
+            ctx.workspace_id,
+        )
 
     has_block = any(h.action == "block" for h in hits)
     return CheckResponse(
@@ -223,7 +254,7 @@ def _log_events(
     workspace_id: str,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
-    with get_db() as conn:
+    with _GUARDRAIL_DB_LOCK, get_db() as conn:
         for hit in hits:
             conn.execute(
                 """INSERT INTO guardrail_events

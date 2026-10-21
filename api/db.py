@@ -426,6 +426,60 @@ CREATE TABLE IF NOT EXISTS procedural_memories (
 );
 """
 
+CREATE_RAG_DOCUMENTS = """
+CREATE TABLE IF NOT EXISTS rag_documents (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    source_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    sha256_hash TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'text/markdown',
+    byte_size INTEGER DEFAULT 0,
+    parent_count INTEGER DEFAULT 0,
+    child_count INTEGER DEFAULT 0,
+    contextual_enriched BOOLEAN DEFAULT 1,
+    storage_uri TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'ready',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_RAG_PARENT_CHUNKS = """
+CREATE TABLE IF NOT EXISTS rag_parent_chunks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    source_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    doc_name TEXT NOT NULL DEFAULT '',
+    section_index INTEGER DEFAULT 0,
+    heading_path TEXT NOT NULL DEFAULT '',
+    raw_markdown TEXT NOT NULL DEFAULT '',
+    token_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_RAG_CHILD_CHUNKS = """
+CREATE TABLE IF NOT EXISTS rag_child_chunks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    source_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    doc_name TEXT NOT NULL DEFAULT '',
+    heading_path TEXT NOT NULL DEFAULT '',
+    child_index INTEGER DEFAULT 0,
+    raw_text TEXT NOT NULL DEFAULT '',
+    context_prefix TEXT NOT NULL DEFAULT '',
+    enriched_text TEXT NOT NULL DEFAULT '',
+    token_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 TENANT_SCOPED_TABLES = (
     "models",
     "rag_sources",
@@ -448,6 +502,9 @@ TENANT_SCOPED_TABLES = (
     "semantic_memories",
     "episodic_memories",
     "procedural_memories",
+    "rag_documents",
+    "rag_parent_chunks",
+    "rag_child_chunks",
 )
 
 _MIGRATE_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -474,6 +531,7 @@ def _open_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -538,6 +596,9 @@ def init_db() -> None:
             CREATE_SEMANTIC_MEMORIES,
             CREATE_EPISODIC_MEMORIES,
             CREATE_PROCEDURAL_MEMORIES,
+            CREATE_RAG_DOCUMENTS,
+            CREATE_RAG_PARENT_CHUNKS,
+            CREATE_RAG_CHILD_CHUNKS,
         ):
             conn.execute(ddl)
 

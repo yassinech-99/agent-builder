@@ -253,7 +253,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 
 ---
 
-## Phase 7 — Production Contextual, Hybrid & Agentic RAG Pipeline
+## Phase 7 — Production Contextual, Hybrid & Agentic RAG Pipeline *(✅ COMPLETED)*
 
 - **Async Streaming Multi-User Ingestion Pipeline (`202 Accepted` + Live Progress SSE):**
   - Streams files directly to MinIO (`O(1)` memory per upload regardless of concurrent uploads!) and enqueues chunk jobs onto the fair-queued P1 background worker pool.
@@ -293,7 +293,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 | **Phase 4** *(✅ DONE)* | **5-Stage Context Engine, Prefix KV-Cache Alignment, `SKILL.md` & Context Meter** | `agent/context_engine.py`, `agent/skills.py`, `api/routes/{skills,context}.py`, `app/(dashboard)/skills/page.tsx`, `components/thread/context-meter.tsx` | Byte-stable Block 1 prefix across turns & users; 100-turn stress run stays bounded with `0` overflows (`31/31` pytest + `16/16` Next.js routes green) |
 | **Phase 5** *(✅ DONE)* | **Durable Sessions, `Last-Event-ID` Stream Replay, Checkpoint Forking & Sub-Agents** | `api/services/run_manager.py`, `api/routes/sessions.py`, `agent/subagents.py`, `app/(dashboard)/sessions/page.tsx`, `ThreadHistory` | Pod kill mid-stream recovers cleanly via `wake(session_id)`; tab reload replays live stream; thread fork + sub-agent traces green (`36/36` pytest + `17/17` Next.js routes) |
 | **Phase 6** *(✅ DONE)* | **4-Tier Cognitive Memory + Bi-Temporal Facts + Sleep-Time Consolidator + `/memories`** | `agent/memory_engine.py`, `api/services/memory_consolidator.py`, `api/routes/memories.py`, `app/(dashboard)/memories/page.tsx` | `0ms` write latency on chat path; conflicting facts auto-supersede; `<35ms` hybrid memory recall (`41/41` pytest + `18/18` Next.js routes green) |
-| **Phase 7** | **Contextual + Parent-Child + `NVIDIAEmbeddings` Qdrant + BM25 + `NVIDIARerank` RAG** | `api/services/rag_pipeline.py`, `api/routes/rag.py`, `app/(dashboard)/rag/page.tsx`, `messages/citations.tsx` | Streaming MinIO upload + async P1 indexing + batched `NVIDIARerank` + clickable `[1]` citation drawer |
+| **Phase 7** *(✅ DONE)* | **Contextual + Parent-Child + `NVIDIAEmbeddings` Qdrant + BM25 + `NVIDIARerank` RAG** | `api/services/rag_pipeline.py`, `api/routes/rag_pipeline.py`, `app/(dashboard)/rag/page.tsx`, `messages/citations.tsx` | Streaming upload + `202` SSE + parent-child table preservation + batched `NVIDIARerank` + clickable `[1]` drawer (`45/45` pytest + `18/18` Next.js routes green) |
 | **Phase 8** | **`NemoGuard` Pre/Post Safety, `Riva NIM` Voice, FinOps `/analytics` & `/evals`** | `agent/guardrails_engine.py`, `api/routes/voice.py`, `app/(dashboard)/analytics/`, `app/(dashboard)/evals/` | Deterministic input/tool/output guardrails; real-time streaming voice; multi-tenant FinOps & CI eval suite |
 
 ---

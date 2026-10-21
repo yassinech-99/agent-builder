@@ -122,11 +122,11 @@ class MultiTenantVectorStore:
         return f"nimagents_{namespace}_dim_{dim}"
 
     async def ensure_collection(self, dim: int, namespace: str = "rag") -> str:
+        client = await self.get_client()
         collection_name = self.collection_name_for_dim(dim, namespace=namespace)
         if collection_name in self._ready_collections:
             return collection_name
 
-        client = await self.get_client()
         async with self._get_lock():
             if collection_name in self._ready_collections:
                 return collection_name
