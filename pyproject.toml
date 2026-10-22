@@ -30,7 +30,6 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.0",
     "mcp[cli]>=1.26.0",
     "openai>=2.24.0",
-    "minio>=7.2.0",
     "qdrant-client>=1.13.0",
     "tiktoken>=0.8.0",
     "python-dotenv>=1.2.2",

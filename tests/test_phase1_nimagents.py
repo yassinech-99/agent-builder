@@ -44,6 +44,9 @@ def test_zero_aws_and_complete_rebranding_across_codebase():
     forbidden_patterns = [
         r"\bboto3\b",
         r"\bbotocore\b",
+        r"\bminio\b",
+        r"\bMinIO\b",
+        r"\bMINIO_",
         r"langchain[-_]aws",
         r"nova[-_]act",
         r"\bNovaGrid\b",
@@ -284,16 +287,16 @@ def test_storage_rag_and_guardrails_endpoints(client):
     st = client.post(
         "/api/storage",
         json={
-            "name": "Local MinIO",
+            "name": "Local RustFS",
             "endpoint_url": "http://localhost:9000",
             "bucket_name": "nimagents-corpus",
-            "access_key": "minioadmin",
-            "secret_key": "supersecretminiokey",
+            "access_key": "nimagentsadmin",
+            "secret_key": "supersecretrustfskey",
             "skip_validation": True,
         },
     )
     assert st.status_code == 201
-    assert "supersecretminiokey" not in str(st.json())
+    assert "supersecretrustfskey" not in str(st.json())
 
     # NIM RAG registration
     rag = client.post(

@@ -2,7 +2,7 @@
 
 Implements the end-to-end enterprise retrieval architecture specified in `plan.md` Phase 7:
   1. **Streaming `O(1)` Upload + SHA-256 Content Deduplication (`rag_documents`):**
-     - Streams uploaded bytes in `64 KiB` chunks directly to staging / MinIO object storage without
+     - Streams uploaded bytes in `64 KiB` chunks directly to staging / RustFS object storage without
        buffering large files in event-loop RAM, skipping unchanged files instantaneously (`deduplicated=True`).
   2. **Async `202 Accepted` Ingestion on Fair-Queued Priority Lane `P1` + Live SSE Progress:**
      - Decouples heavy parsing, contextual enrichment, and embedding completely from interactive chat (`P0`),
@@ -46,6 +46,7 @@ from langchain_core.documents import Document
 
 from agent.memory_engine import LocalHashedSemanticEmbedder
 from agent.registry import count_text_tokens
+from api.core.object_store import build_object_store_client_for_bucket
 from api.core.tenancy import (
     TenantContext,
     get_tenant_context,
@@ -53,7 +54,6 @@ from api.core.tenancy import (
 )
 from api.core.vector_store import vector_store as shared_vector_store
 from api.db import get_db
-from api.routes.storage import build_minio_client_for_bucket
 from api.services.batcher import gpu_batcher
 from api.utils.doc_loader import MAX_FILE_SIZE, load_documents
 from api.workers.priority_queue import work_pool
@@ -678,21 +678,28 @@ class EnterpriseRagPipeline:
                     "child_count": dup_row["child_count"],
                 }
 
-            # Optional MinIO archival of raw file under tenant object prefix
+            # Optional RustFS archival of raw file under tenant object prefix
             storage_uri = f"local://{active.tenant_id}/{active.workspace_id}/{source_id}/{filename}"
             bucket_name = (src_row.get("storage_bucket") or "").strip()
             if bucket_name:
-                def _archive_minio() -> str:
-                    m_client = build_minio_client_for_bucket(bucket_name)
-                    obj_key = f"{scoped_object_prefix(active, src_row.get('storage_prefix') or 'rag')}/{filename}"
-                    raw_bytes = file_path.read_bytes()
-                    m_client.put_object(bucket_name, obj_key, io.BytesIO(raw_bytes), len(raw_bytes))
-                    return f"s3://{bucket_name}/{obj_key}"
+                def _archive_object_store() -> str:
+                    s_client = build_object_store_client_for_bucket(bucket_name, ctx=active)
+                    try:
+                        prefix_clean = scoped_object_prefix(
+                            src_row.get("storage_prefix") or "rag",
+                            active,
+                        )
+                        obj_key = f"{prefix_clean}{filename}"
+                        raw_bytes = file_path.read_bytes()
+                        s_client.put_object(bucket_name, obj_key, io.BytesIO(raw_bytes), len(raw_bytes))
+                        return f"s3://{bucket_name}/{obj_key}"
+                    finally:
+                        s_client.close()
 
                 try:
-                    storage_uri = await asyncio.to_thread(_archive_minio)
-                except Exception as m_exc:
-                    logger.warning("MinIO archival skipped cleanly (%s)", m_exc)
+                    storage_uri = await asyncio.to_thread(_archive_object_store)
+                except Exception as s_exc:
+                    logger.warning("RustFS archival skipped cleanly (%s)", s_exc)
 
             # Step 2: Load & Structure-Aware Parent-Child Chunking (`25%`)
             await asyncio.to_thread(

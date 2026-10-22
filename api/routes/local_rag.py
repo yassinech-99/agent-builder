@@ -22,9 +22,9 @@ from api.core.tenancy import (
     scoped_object_prefix,
     stream_upload_to_path,
 )
+from api.core.object_store import build_object_store_client_for_bucket
 from api.core.vector_store import vector_store
 from api.db import get_db
-from api.routes.storage import build_minio_client_for_bucket
 from api.services.batcher import gpu_batcher
 from api.utils.doc_loader import ALLOWED_EXTENSIONS, MAX_FILE_SIZE, load_documents
 from api.workers.priority_queue import work_pool
@@ -262,7 +262,7 @@ async def _import_and_index_bucket_qdrant(
 ) -> tuple[int, int]:
     active = ctx or get_tenant_context()
     enforced_prefix = scoped_object_prefix(prefix, active)
-    client = build_minio_client_for_bucket(bucket_name, ctx=active)
+    client = build_object_store_client_for_bucket(bucket_name, ctx=active)
 
     def _download_bucket_docs() -> list[Any]:
         all_docs: list[Any] = []
@@ -410,7 +410,7 @@ async def upload_file(
 
 @router.post("/bucket-import")
 async def bucket_import(body: BucketImportRequest):
-    """Import documents from tenant-scoped S3/MinIO object prefix into Qdrant on Lane P1."""
+    """Import documents from tenant-scoped RustFS / S3 object prefix into Qdrant on Lane P1."""
     ctx = get_tenant_context()
     source_id = str(uuid.uuid4())
     enforced_prefix = scoped_object_prefix(body.prefix, ctx)

@@ -568,7 +568,7 @@ function NimRagTab() {
               <Label>
                 Object Bucket{" "}
                 <span className="text-muted-foreground text-xs font-normal">
-                  (optional MinIO / S3 bucket for uploads)
+                  (optional RustFS / S3 bucket for uploads)
                 </span>
               </Label>
               <Input
@@ -1197,7 +1197,7 @@ function LocalRagTab() {
         <div className="bg-card mb-6 rounded-xl border p-6 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold">
-              Import from MinIO / S3-Compatible Bucket
+              Import from RustFS / S3-Compatible Bucket
             </h2>
             <Button
               variant="ghost"
@@ -1305,7 +1305,7 @@ function LocalRagTab() {
         <EmptyState
           icon={HardDrive}
           title="No vector knowledge sources yet"
-          subtitle="Upload documents or import from MinIO / S3-compatible object storage"
+          subtitle="Upload documents or import from RustFS / S3-compatible object storage"
           actionLabel="Upload Document"
           onAction={() => setShowUpload(true)}
         />

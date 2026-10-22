@@ -13,7 +13,7 @@ Implements the complete multi-tenant context engineering pipeline from `plan.md`
 
   - **5-Stage Graduated Pre-Model Shaper Pipeline:**
       * **Stage 1 — Large Tool Output Offloading (`> offload_threshold_tokens`, default `3,000` tok):**
-        Streams oversized `ToolMessage` outputs to MinIO/S3 (with seamless tenant-isolated DB artifact fallback),
+        Streams oversized `ToolMessage` outputs to RustFS/S3 (with seamless tenant-isolated DB artifact fallback),
         replacing inline bloat with a structural schema summary + `1,000`-token preview + `read_artifact(...)`.
       * **Stage 2 — Historical `<think>` Reasoning Stripping (`keep_recent_thinking_turns = 2`):**
         Strips `<think>...</think>` blocks and `reasoning_content` older than the latest 2 assistant turns.
@@ -203,13 +203,13 @@ def extract_structural_summary(raw_text: str, content_type: str = "text/plain") 
     return (f"Text/log payload ({line_count} lines, {len(raw_text):,} chars)", content_type)
 
 
-def _try_upload_artifact_to_minio(
+def _try_upload_artifact_to_object_store(
     ctx: TenantContext,
     artifact_id: str,
     raw_bytes: bytes,
     content_type: str,
 ) -> str:
-    """Stream artifact payload to tenant-isolated MinIO object storage when configured."""
+    """Stream artifact payload to tenant-isolated RustFS object storage when configured."""
     try:
         with get_db() as conn:
             row = conn.execute(
@@ -220,20 +220,24 @@ def _try_upload_artifact_to_minio(
             ).fetchone()
         if not row:
             return ""
-        from api.routes.storage import build_minio_client_for_bucket
+        from api.core.object_store import build_object_store_client_for_bucket
+        from api.core.tenancy import scoped_object_prefix
 
         row_d = dict(row)
-        client = build_minio_client_for_bucket(row_d)
         bucket = row_d["bucket_name"]
-        obj_key = f"tenants/{ctx.tenant_id}/{ctx.workspace_id}/artifacts/{artifact_id}.txt"
-        client.put_object(
-            bucket,
-            obj_key,
-            io.BytesIO(raw_bytes),
-            length=len(raw_bytes),
-            content_type=content_type,
-        )
-        return f"s3://{bucket}/{obj_key}"
+        client = build_object_store_client_for_bucket(bucket, ctx=ctx)
+        try:
+            obj_key = f"{scoped_object_prefix('artifacts', ctx)}{artifact_id}.txt"
+            client.put_object(
+                bucket,
+                obj_key,
+                io.BytesIO(raw_bytes),
+                length=len(raw_bytes),
+                content_type=content_type,
+            )
+            return f"s3://{bucket}/{obj_key}"
+        finally:
+            client.close()
     except Exception:
         return ""
 
@@ -264,7 +268,7 @@ def persist_offloaded_artifact(
     tok_count = count_text_tokens(raw_text)
     char_budget = max(400, preview_tokens * 4)
     preview = raw_text[:char_budget]
-    s3_uri = _try_upload_artifact_to_minio(active, artifact_id, raw_bytes, detected_ct)
+    s3_uri = _try_upload_artifact_to_object_store(active, artifact_id, raw_bytes, detected_ct)
     storage_uri = s3_uri or f"artifact://{active.tenant_id}/{active.workspace_id}/{artifact_id}"
 
     record = {

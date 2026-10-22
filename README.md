@@ -5,7 +5,7 @@
 It runs in two modes from the same codebase:
 
 - **Local mode (no Docker required):** SQLite (`WAL`), embedded local Qdrant, and in-process priority queues.
-- **Cluster mode (`docker compose`):** PostgreSQL 17 with `FORCE ROW LEVEL SECURITY`, PgBouncer, Redis 8, Qdrant, Meilisearch, and MinIO.
+- **Cluster mode (`docker compose`):** PostgreSQL 17 with `FORCE ROW LEVEL SECURITY`, PgBouncer, Redis 8, Qdrant, Meilisearch, and RustFS.
 
 ---
 
@@ -29,7 +29,7 @@ It runs in two modes from the same codebase:
 - Four memory tiers isolated per tenant: pinned Core blocks, bi-temporal Semantic facts (auto-superseding contradicted facts), Episodic run summaries, and versioned Procedural prompt rules consolidated asynchronously on background workers.
 
 ### Contextual Hybrid RAG (`/rag`, `/storage`)
-- Streaming chunked uploads (`202 Accepted` + SSE progress) with `SHA-256` deduplication and S3-compatible bucket sync (`MinIO`, `R2`, `SeaweedFS`, `Ceph`).
+- Streaming chunked uploads (`202 Accepted` + SSE progress) with `SHA-256` deduplication and S3-compatible bucket sync (`RustFS`, `R2`, `SeaweedFS`, `Ceph`).
 - Structure-aware parent-child Markdown/PDF chunking that keeps tables intact and prepends document/section context to child chunks before indexing.
 - 6-stage query pipeline: parallel Qdrant (`is_tenant=True`, `INT8` scalar quantization) + BM25 search, weighted Reciprocal Rank Fusion (`k=60`), batched `NVIDIARerank`, parent-section deduplication, query rewrite fallback, and clickable `[1]` source drawers in chat.
 
@@ -68,7 +68,7 @@ Data & Inference Backing Services
   • Relational state : PostgreSQL 17 + PgBouncer (28 FORCE RLS tables)  |  SQLite WAL fallback
   • Queues & locks   : Redis 8                                          |  In-process async queues
   • Vector search    : Qdrant (is_tenant=True + INT8 quantization)      |  Embedded local Qdrant
-  • Lexical & files  : Meilisearch (tenant tokens) + MinIO              |  Built-in BM25 + local disk
+  • Lexical & files  : Meilisearch (tenant tokens) + RustFS             |  Built-in BM25 + local disk
   • Model endpoints  : NVIDIA NIM / Dynamo, OpenAI, Anthropic, OpenRouter, vLLM, SGLang, Ollama
 ```
 
@@ -134,7 +134,7 @@ NIM_TTS_BASE_URL=
 # REDIS_URL=redis://localhost:6379/0
 # QDRANT_URL=http://localhost:6333
 # MEILI_URL=http://localhost:7700
-# MINIO_ENDPOINT=localhost:9000
+# RUSTFS_ENDPOINT=http://localhost:9000
 ```
 
 ### 3. (Optional) Start Backing Infrastructure with Docker
@@ -145,7 +145,7 @@ Skip this step if you want lightweight local development (`data/nimagents.db` + 
 docker compose up -d
 ```
 
-This starts PostgreSQL 17 (`:5432`), PgBouncer (`:6432`), Redis 8 (`:6379`), Qdrant (`:6333`), Meilisearch (`:7700`), and MinIO (`:9000`, console `:9001`).
+This starts PostgreSQL 17 (`:5432`), PgBouncer (`:6432`), Redis 8 (`:6379`), Qdrant (`:6333`), Meilisearch (`:7700`), and RustFS (`:9000`, console `:9001`).
 
 ### 4. Start the Application Services
 

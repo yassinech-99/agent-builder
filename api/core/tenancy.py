@@ -205,7 +205,7 @@ def scoped_object_prefix(
     extra_prefix: str = "",
     ctx: TenantContext | None = None,
 ) -> str:
-    """Build strict tenant-isolated S3/MinIO object key prefix:
+    """Build strict tenant-isolated RustFS / S3 object key prefix:
     `tenants/{tenant_id}/workspaces/{workspace_id}/{extra_prefix}`
     """
     active = ctx or get_tenant_context()

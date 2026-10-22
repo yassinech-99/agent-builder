@@ -110,7 +110,7 @@ export default function HomePage() {
                 </div>
                 <p className="text-muted-foreground text-sm">
                   Combine NVIDIA Nemotron Embeddings, NVIDIARerank, Meilisearch BM25,
-                  and S3/MinIO object buckets.
+                  and RustFS / S3 object buckets.
                 </p>
               </div>
               <div className="bg-card/80 rounded-xl border p-5 shadow-sm">

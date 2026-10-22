@@ -21,8 +21,8 @@ from api.core.tenancy import (
     scoped_object_prefix,
     stream_upload_to_path,
 )
+from api.core.object_store import build_object_store_client_for_bucket
 from api.db import get_db, mask_secret
-from api.routes.storage import build_minio_client_for_bucket
 from api.utils.doc_loader import MAX_FILE_SIZE
 
 logger = logging.getLogger("nimagents.api.rag")
@@ -207,7 +207,7 @@ async def upload_data_to_kb(
     filename = Path(file.filename or "upload.bin").name
     tenant_prefix = scoped_object_prefix(prefix, ctx)
     object_key = f"{tenant_prefix}{filename}"
-    minio_client = build_minio_client_for_bucket(bucket, ctx=ctx)
+    store_client = build_object_store_client_for_bucket(bucket, ctx=ctx)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         staged_path = Path(tmpdir) / filename
@@ -218,7 +218,7 @@ async def upload_data_to_kb(
             meta = await _generate_metadata_json(description, filename)
 
         def _upload_objects() -> bool:
-            minio_client.fput_object(
+            store_client.fput_object(
                 bucket_name=bucket,
                 object_name=object_key,
                 file_path=str(staged_path),
@@ -228,7 +228,7 @@ async def upload_data_to_kb(
                 try:
                     parsed = json.loads(meta)
                     payload = json.dumps(parsed, indent=2).encode("utf-8")
-                    minio_client.put_object(
+                    store_client.put_object(
                         bucket_name=bucket,
                         object_name=f"{object_key}.metadata.json",
                         data=io.BytesIO(payload),

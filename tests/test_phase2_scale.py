@@ -87,7 +87,7 @@ def test_zero_faiss_pickle_deserialization_and_rls_compose_infra():
         assert required_table in rls_sql
 
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    for service_name in ("postgres:", "pgbouncer:", "redis:", "qdrant:", "meilisearch:", "minio:"):
+    for service_name in ("postgres:", "pgbouncer:", "redis:", "qdrant:", "meilisearch:", "rustfs:"):
         assert service_name in compose
     assert "POOL_MODE: transaction" in compose
 
@@ -139,8 +139,8 @@ def test_end_to_end_tenant_and_workspace_api_isolation(isolated_scale_env):
             "/api/storage",
             headers={"Authorization": f"Bearer {alpha_jwt}"},
             json={
-                "name": "Shared Cluster MinIO",
-                "endpoint_url": "http://minio:9000",
+                "name": "Shared Cluster RustFS",
+                "endpoint_url": "http://rustfs:9000",
                 "bucket_name": "enterprise-corpus",
                 "skip_validation": True,
             },
