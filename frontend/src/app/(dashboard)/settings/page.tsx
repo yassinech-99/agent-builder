@@ -209,7 +209,7 @@ export default function SettingsPage() {
                 <h2 className="text-lg font-semibold">Tenant &amp; Workspace Isolation Scope</h2>
                 <p className="text-muted-foreground text-xs">
                   Propagates <code>X-Tenant-ID</code> &amp; <code>X-Workspace-ID</code> across Postgres RLS, Qdrant{" "}
-                  <code>is_tenant</code> shards, Meilisearch filters, and MinIO prefixes.
+                  <code>is_tenant</code> shards, Meilisearch filters, and RustFS prefixes.
                 </p>
               </div>
             </div>

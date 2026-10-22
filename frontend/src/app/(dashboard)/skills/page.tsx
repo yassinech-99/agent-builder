@@ -336,7 +336,7 @@ export default function SkillsAndContextPage() {
                   5-Stage Graduated Context Shaper Verification Bench
                 </h2>
                 <p className="text-muted-foreground text-xs">
-                  Test Stage 1 MinIO/DB artifact offload + Stage 2 &lt;think&gt; stripping + Stage 4 fact flush &amp; compaction live.
+                  Test Stage 1 RustFS/DB artifact offload + Stage 2 &lt;think&gt; stripping + Stage 4 fact flush &amp; compaction live.
                 </p>
               </div>
             </div>

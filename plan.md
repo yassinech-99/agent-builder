@@ -1,7 +1,7 @@
 # `nimAgents` — Master Architecture & Multi-User Scalable Engineering Plan (`plan.md`)
 
 > **Product Name:** **nimAgents** *(Rebranded from `NovaGrid Agents`, 100% Amazon/AWS-Free)*  
-> **Package / Namespace Slug:** `nimagents` (`data/nimagents.db` local dev · PostgreSQL 17 + `PgBouncer` + Redis 8 + Qdrant + Meilisearch + MinIO in multi-user production)  
+> **Package / Namespace Slug:** `nimagents` (`data/nimagents.db` local dev · PostgreSQL 17 + `PgBouncer` + Redis 8 + Qdrant + Meilisearch + RustFS in multi-user production)  
 > **Primary AI Stack:** **NVIDIA NIM & NVIDIA Dynamo** (`ChatNVIDIA`, `ChatNVIDIADynamo`, `NVIDIAEmbeddings`, `NVIDIARerank`, `NemoGuard`, `Riva Speech NIM`) + Open Multi-Provider Support (`OpenAI`, `Anthropic`, `OpenRouter`, `vLLM`, `SGLang`, `Ollama`)  
 > **Core Engineering Pillars:** Total Rebrand (`nimAgents`) · Horizontally Scalable Multi-Tenant Backend & AI Inference Gateway · Unified Tool Registry, Deferred Tools (`ToolSearch`) & Programmatic Tool Calling · 5-Stage Context Engineering & KV-Cache Optimization · Durable Branchable Sessions · 4-Tier Cognitive Memory + Sleep-Time Consolidation · Contextual Hybrid RAG · Safety, Voice & FinOps Evals
 
@@ -71,9 +71,9 @@ If 25 users hit the current codebase simultaneously today, here is the exact seq
 
 | Layer | Exact Files & AWS Artefacts Removed | `nimAgents` Replacement |
 |---|---|---|
-| **Packaging & Ops** | `pyproject.toml` (`novagrid-agents`, `langchain-aws`, `boto3`, `nova-act`), `README.md`, `docker-compose.yml` (`novagrid-meilisearch`), `.gitignore` (`scoutsuite-aws-mcp/`), `main.py` | Package `nimagents`; add `langchain-nvidia-ai-endpoints`, `langchain-anthropic`, `sqlalchemy[asyncio]`, `asyncpg`, `aiosqlite`, `redis[hiredis]`, `qdrant-client`, `minio`, `tiktoken`, `uvloop`; full `docker-compose.yml` stack. |
+| **Packaging & Ops** | `pyproject.toml` (`novagrid-agents`, `langchain-aws`, `boto3`, `nova-act`), `README.md`, `docker-compose.yml` (`novagrid-meilisearch`), `.gitignore` (`scoutsuite-aws-mcp/`), `main.py` | Package `nimagents`; add `langchain-nvidia-ai-endpoints`, `langchain-anthropic`, `sqlalchemy[asyncio]`, `asyncpg`, `aiosqlite`, `redis[hiredis]`, `qdrant-client`, pure-Python `RustFSClient` (`AWS4-HMAC-SHA256`), `tiktoken`, `uvloop`; full `docker-compose.yml` stack (`rustfs/rustfs:latest`). |
 | **Agent Runtime (`agent/`)** | `agent/model.py` (`ChatBedrockConverse`, `aws_*`), `agent/graph.py` (`NovaGrid Agents`, `novagrid.graph`, `boto3` `bedrock-agent-runtime`), `agent/tools.py` (`_make_nova_act_browser`, `nova_act_browser`) | **NVIDIA NIM + Multi-Provider Gateway** (`ChatNVIDIA` / `ChatNVIDIADynamo` / OpenAI / Anthropic / vLLM / Ollama); **Unified Hybrid Qdrant + Meilisearch + `NVIDIARerank` Retriever**; **Remote Sandbox Browser Pool (Playwright CDP)**. |
-| **Control Plane (`api/`)** | `api/app.py`, `api/db.py` (`gridagents.db`, `aws_*`, `nova-multimodal`, `AKIA`), `api/routes/models.py`, `local_rag.py` (`BedrockEmbeddings`, Titan), `rag.py` (`bedrock-agent-runtime`), `storage.py` (`boto3`), `voice.py` (`nova-2-sonic`), logger names | Async DB (`Postgres` + `aiosqlite` local fallback `data/nimagents.db`), `nimagents.*` structured JSON loggers, `NVIDIAEmbeddings` + `NVIDIARerank`, S3-compatible `minio` storage, `Riva Speech NIM` / Open Speech WebSocket. |
+| **Control Plane (`api/`)** | `api/app.py`, `api/db.py` (`gridagents.db`, `aws_*`, `nova-multimodal`, `AKIA`), `api/routes/models.py`, `local_rag.py` (`BedrockEmbeddings`, Titan), `rag.py` (`bedrock-agent-runtime`), `storage.py` (`boto3`), `voice.py` (`nova-2-sonic`), logger names | Async DB (`Postgres` + `aiosqlite` local fallback `data/nimagents.db`), `nimagents.*` structured JSON loggers, `NVIDIAEmbeddings` + `NVIDIARerank`, S3-compatible **RustFS** (`api/core/object_store.py`), `Riva Speech NIM` / Open Speech WebSocket. |
 | **Frontend (`frontend/`)** | `package.json` (`novagrid-agents`), `app/layout.tsx`, `app/page.tsx`, `components/icons/grid-agents.tsx` (`NovaGridLogo`), `public/logo.svg`, `runtime-splash.tsx`, `sidebar.tsx`, `Stream.tsx`, `Thread.tsx`, `step-basics.tsx`, `step-review.tsx`, `models/page.tsx`, `rag/page.tsx`, `storage/page.tsx`, `voice/page.tsx`, `voice-session.tsx`, `lib/guardrails.ts` | Rebrand completely to **`nimAgents`** (`NimAgentsLogo`, `nimagents:*` storage keys, NIM model & endpoint discovery UI, `<think>` streaming accordions, Hybrid Collection RAG UI, S3-compatible bucket connector). |
 
 ---
@@ -112,7 +112,7 @@ If 25 users hit the current codebase simultaneously today, here is the exact seq
 │    antic Cache      │ │ • Shared MCP Conn Pool    │ │  • Redis 8 (Streams, PubSub, Locks, Cache) │
 │  • Embed/Rerank     │ │ • Zero-Trust Vault Proxy  │ │  • Qdrant Cluster (`is_tenant=True` HNSW)  │
 │    Micro-Batcher    │ │   (Secrets NEVER enter    │ │  • Meilisearch (Tenant-Filtered BM25)      │
-│  • Prefix Hash /    │ │   sandbox or LLM prompt!) │ │  • MinIO / S3-Compatible Object Storage    │
+│  • Prefix Hash /    │ │   sandbox or LLM prompt!) │ │  • RustFS / S3-Compatible Object Storage   │
 │    NVIDIA Dynamo    │ └───────────────────────────┘ └────────────────────────────────────────────┘
 └─────────┬───────────┘
           ▼
@@ -125,14 +125,14 @@ If 25 users hit the current codebase simultaneously today, here is the exact seq
 ```
 
 > **Developer Experience Guarantee ("Zero-Friction Dual Mode"):**  
-> `nimAgents` uses clean repository/adapter interfaces so **`docker compose up`** runs the entire production multi-tenant stack locally (Postgres 17, PgBouncer, Redis 8, Qdrant, Meilisearch, MinIO, API, Brain Worker, Frontend), **AND** also supports a lightweight single-command `NIMAGENTS_DEV_LITE=1` mode (`aiosqlite` + embedded local Qdrant + asyncio in-process queues) for instant laptop development without heavy containers!
+> `nimAgents` uses clean repository/adapter interfaces so **`docker compose up`** runs the entire production multi-tenant stack locally (Postgres 17, PgBouncer, Redis 8, Qdrant, Meilisearch, RustFS, API, Brain Worker, Frontend), **AND** also supports a lightweight single-command `NIMAGENTS_DEV_LITE=1` mode (`aiosqlite` + embedded local Qdrant + asyncio in-process queues) for instant laptop development without heavy containers!
 
 ---
 
 ## Phase 1 — Total Rebranding to `nimAgents`, Zero-AWS Purge & Multi-Provider NVIDIA NIM Core ✅ COMPLETED
 
 > **Status:** **Completed & Verified (`tests/test_phase1_nimagents.py` passing + `pnpm build` zero-error production compile)**
-> - **Zero-AWS Purge Verified:** Removed `langchain-aws`, `boto3`, and `nova-act`; replaced storage with open S3-compatible `minio.Minio`, RAG with `NVIDIAEmbeddings` + `NVIDIARerank` + `NVIDIARAGRetriever`, and voice with bounded-deque streaming WebSocket gateway (`api/routes/voice.py`). Automated repo-wide test enforces zero legacy AWS/Nova/NovaGrid references across all source files.
+> - **Zero-AWS Purge Verified:** Removed `langchain-aws`, `boto3`, and `nova-act`; replaced storage with Apache-2.0 **RustFS** (`api/core/object_store.py` pure-Python S3 SigV4 `RustFSClient`), RAG with `NVIDIAEmbeddings` + `NVIDIARerank` + `NVIDIARAGRetriever`, and voice with bounded-deque streaming WebSocket gateway (`api/routes/voice.py`). Automated repo-wide test enforces zero legacy AWS/Nova/NovaGrid/MinIO references across all source files.
 > - **Multi-Provider NVIDIA NIM & Dynamo Gateway Shipped:** `agent/model.py` + `/api/models` + `/models` UI now support `nvidia_nim` (`ChatNVIDIA`), `nvidia_dynamo` (`ChatNVIDIADynamo` with `priority` hints), `openai`, `anthropic`, `openrouter`, `vllm`, `sglang`, `ollama`, and `openai_compatible`, pinned to `langchain-nvidia-ai-endpoints>=1.5.0` with multimodal path-traversal sanitization (`GHSA-g28h-2cmm-rj9x`), secret masking, live `/v1/models` discovery, ping checks, role routing, `.with_fallbacks(...)`, and collapsible `<think>...</think>` reasoning streaming.
 
 ### 1.1 Complete `nimAgents` Brand & Codebase Rename
@@ -159,7 +159,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
    - Instead of spin-up-per-user FAISS files on local disk (or naive global HNSW post-filtering that returns empty results for small tenants), `nimAgents` creates **one shared Qdrant collection per embedding dimension** configured with `payload_schema={"tenant_id": KeywordIndexParams(type="keyword", is_tenant=True)}`!
    - Qdrant physically co-locates each tenant's vectors on dedicated micro-shards/sub-graphs on disk (`mmap` + scalar `int8` quantization cutting RAM usage by **4x**), scaling smoothly from **10 to 100,000+ tenants** with `<5ms` search latency and zero disk pickle deserialization!
 3. **Meilisearch Tenant Isolation:** Enforce mandatory `filter = ["tenant_id = '...' AND collection_id IN [...]"]` signed with Meilisearch Tenant Tokens.
-4. **Object Storage Isolation:** Store all uploaded files, large offloaded tool outputs, and artifacts in MinIO / S3-compatible buckets under `tenants/{tenant_id}/workspaces/{workspace_id}/...` using streaming async chunked uploads (never buffering 50 MB `await file.read()` entirely into API worker RAM!).
+4. **Object Storage Isolation:** Store all uploaded files, large offloaded tool outputs, and artifacts in RustFS / S3-compatible buckets under `tenants/{tenant_id}/workspaces/{workspace_id}/...` using streaming async chunked uploads (never buffering 50 MB `await file.read()` entirely into API worker RAM!).
 
 ### 2.2 Async Database & Connection Pooling Architecture (`PgBouncer` + `Redis 8` + Shared HTTP/2 Pools)
 - **Eliminate Connection Exhaustion:** Front PostgreSQL 17 with **PgBouncer in `transaction` pooling mode**, sizing pools strictly with:
@@ -225,7 +225,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
   - **Block 3 (Dynamic Tail):** Append-only discovered deferred tools + Recent verbatim turns + Current date context.
 
 ### 4.2 5-Stage Pre-Model Shaper Pipeline (`agent/context_engine.py`)
-1. **Stage 1 — Large Tool Output Offloading (`> 3,000` tok):** Streams large payloads directly to MinIO (`artifact://{id}`), injecting structural schema + 1,000-token preview + `read_artifact(id, offset, limit, grep)` JIT access.
+1. **Stage 1 — Large Tool Output Offloading (`> 3,000` tok):** Streams large payloads directly to RustFS (`s3://{bucket}/tenants/...` / `artifact://{id}`), injecting structural schema + 1,000-token preview + `read_artifact(id, offset, limit, grep)` JIT access.
 2. **Stage 2 — Historical `<think>` Stripping (`clear_thinking`):** Strips verbose reasoning traces older than `N - 2` turns while keeping final answers & tool calls.
 3. **Stage 3 — Batch KV-Aware Tool Result Clearing (`clear_tool_uses`):** Evicts stale re-fetchable tool results older than `keep_recent = 5` in batches of `clear_at_least = 10,000` tokens (avoiding per-turn prefix invalidation!), honoring `exclude_tools = {"memory", "read_artifact", "activate_skill", "human_input"}`.
 4. **Stage 4 — Pre-Compact Fact Flush + Recall-Tuned Rolling Compaction (`> 80%` window):** Saves critical facts to Memory first, then summarizes older turns via `compactor` NIM model into a structured `<compaction_checkpoint>` block + last `6` verbatim turns.
@@ -256,7 +256,7 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 ## Phase 7 — Production Contextual, Hybrid & Agentic RAG Pipeline *(✅ COMPLETED)*
 
 - **Async Streaming Multi-User Ingestion Pipeline (`202 Accepted` + Live Progress SSE):**
-  - Streams files directly to MinIO (`O(1)` memory per upload regardless of concurrent uploads!) and enqueues chunk jobs onto the fair-queued P1 background worker pool.
+  - Streams files directly to RustFS (`O(1)` memory per upload regardless of concurrent uploads!) and enqueues chunk jobs onto the fair-queued P1 background worker pool.
   - **Structure-Aware Parent-Child Chunking:** Preserves Markdown/PDF heading breadcrumbs and tables intact (`1,400`-tok parents linked to `400`-tok searchable children).
   - **Contextual Retrieval Enrichment:** Optional batch pass using fast `Nemotron-Nano-8B` prepending a 50–80 token document-situating context to every child chunk prior to indexing.
   - **Dual Indexing:** Micro-batched `NVIDIAEmbeddings` (`nvidia/llama-nemotron-embed-1b-v2` / `nv-embedqa-e5-v5` / offline `BAAI/bge-m3`) into **Qdrant** (`is_tenant=True`) + **Meilisearch** Contextual BM25—plus connectors for external **NVIDIA RAG Blueprint (`NVIDIARAGRetriever`)**, Milvus, and S3-compatible bucket delta-sync (`SHA-256` dedup).
@@ -279,9 +279,9 @@ Every resource in `nimAgents` (`agents`, `sessions`, `models`, `tool_credentials
 
 | Concurrent Active Users | API Gateway Pods | Stateless Brain Workers | Background Ingestion Workers | Data Plane Topology | Inference Tier Guidance |
 |---|---|---|---|---|---|
-| **1 – 25 Users** *(Team / Single Host)* | 2 workers (`uvloop`) | 2 workers | 1 worker | Single-node `docker-compose`: Postgres 17 + PgBouncer + Redis 8 + Qdrant + Meilisearch + MinIO | NVIDIA Hosted NIM API (`integrate.api.nvidia.com`) or 1–2 GPU Monolithic NIM (`NIM_ENABLE_KV_CACHE_REUSE=1`) |
+| **1 – 25 Users** *(Team / Single Host)* | 2 workers (`uvloop`) | 2 workers | 1 worker | Single-node `docker-compose`: Postgres 17 + PgBouncer + Redis 8 + Qdrant + Meilisearch + RustFS | NVIDIA Hosted NIM API (`integrate.api.nvidia.com`) or 1–2 GPU Monolithic NIM (`NIM_ENABLE_KV_CACHE_REUSE=1`) |
 | **25 – 500 Users** *(Department / Mid-Market SaaS)* | 3–6 stateless pods (HPA on CPU / active SSE conns) | 4–12 pods (HPA on `stream:runs:interactive` head-of-line wait `>50ms`) | 2–8 pods (HPA on `stream:jobs:background` lag) | Managed HA Postgres (+ read replica) + PgBouncer (`pool=100`) + Redis 8 Sentinel + 3-node Qdrant (`int8` quantized) | 4–16 GPUs with **Aggregated NIM + Prefix-Hash / Dynamo KV Router** + dedicated 1-GPU Embed/Rerank NIM pod |
-| **500 – 10,000+ Users** *(Enterprise Multi-Tenant)* | 10–30 stateless pods | 20–80 stateless pods | Autoscaled KEDA worker pool + isolated Sandbox cluster | Partitioned Postgres (`tenant_id` RLS) + Redis 8 Cluster + Sharded Qdrant + S3/MinIO Cluster | **NVIDIA Dynamo 1.0 Disaggregated Prefill + Decode Pools** (`NIXL` RDMA + `KVBM` CPU/NVMe KV cache tiering) |
+| **500 – 10,000+ Users** *(Enterprise Multi-Tenant)* | 10–30 stateless pods | 20–80 stateless pods | Autoscaled KEDA worker pool + isolated Sandbox cluster | Partitioned Postgres (`tenant_id` RLS) + Redis 8 Cluster + Sharded Qdrant + Distributed RustFS Cluster | **NVIDIA Dynamo 1.0 Disaggregated Prefill + Decode Pools** (`NIXL` RDMA + `KVBM` CPU/NVMe KV cache tiering) |
 
 ### 12.2 Phased Delivery Roadmap
 

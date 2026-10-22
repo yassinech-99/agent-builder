@@ -128,7 +128,7 @@ export default function StoragePage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Object Storage</h1>
           <p className="text-muted-foreground text-sm">
-            Connect MinIO, Cloudflare R2, SeaweedFS, Ceph, or any S3-compatible bucket
+            Connect RustFS, Cloudflare R2, SeaweedFS, Ceph, or any S3-compatible bucket
           </p>
         </div>
         <Button
@@ -157,7 +157,7 @@ export default function StoragePage() {
                 <Input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="MinIO Knowledge Corpus"
+                  placeholder="RustFS Knowledge Corpus"
                 />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -197,7 +197,7 @@ export default function StoragePage() {
                   onChange={(e) =>
                     setForm({ ...form, access_key: e.target.value })
                   }
-                  placeholder="minioadmin (falls back to MINIO_ACCESS_KEY)"
+                  placeholder="nimagentsadmin (falls back to RUSTFS_ACCESS_KEY)"
                 />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -208,7 +208,7 @@ export default function StoragePage() {
                   onChange={(e) =>
                     setForm({ ...form, secret_key: e.target.value })
                   }
-                  placeholder="•••••••• (falls back to MINIO_SECRET_KEY)"
+                  placeholder="•••••••• (falls back to RUSTFS_SECRET_KEY)"
                 />
               </div>
               <div className="md:col-span-2">
@@ -251,7 +251,7 @@ export default function StoragePage() {
               No object storage buckets registered
             </h2>
             <p className="text-muted-foreground mb-6 max-w-md text-sm">
-              Connect a MinIO, Cloudflare R2, or S3-compatible bucket for document
+              Connect a RustFS, Cloudflare R2, or S3-compatible bucket for document
               ingestion and large tool artifacts.
             </p>
             <Button onClick={() => setShowForm(true)}>
